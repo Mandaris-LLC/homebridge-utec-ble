@@ -61,20 +61,33 @@ class LockSession extends EventEmitter {
     this.peripheral.once('disconnect', this._onDisconnect);
     this.debug(`link up to ${this.peripheral.id}`);
 
-    const { characteristics } = await this.peripheral.discoverAllServicesAndCharacteristicsAsync();
+    // Setup steps wait on the lock answering, and each has its own timeout. If
+    // the link dies underneath them they would otherwise sit out that full
+    // timeout — 15s of nothing before a retry — so race every step against the
+    // link going away and fail as soon as it does.
+    const dropped = new Promise((_, reject) => {
+      this.once('disconnect', () => reject(new Error('Lock dropped the link during setup.')));
+    });
+    dropped.catch(() => {}); // never an unhandled rejection when setup wins
+
+    const { characteristics } = await Promise.race([
+      this.peripheral.discoverAllServicesAndCharacteristicsAsync(),
+      dropped,
+    ]);
     const byUuid = new Map(characteristics.map((c) => [canonUuid(c.uuid), c]));
+    this.debug(`services discovered (${characteristics.length} characteristics)`);
 
     this.data = byUuid.get(CHAR_DATA);
     if (!this.data) throw new Error('Lock has no data characteristic (7201).');
 
-    const { kind, key } = await establishKey(byUuid);
+    const { kind, key } = await Promise.race([establishKey(byUuid), dropped]);
     this.key = key;
     this.keyKind = kind;
     this._stream = new protocol.FrameStream(key);
     this.debug(`key agreed via ${kind}`);
 
     this.data.on('data', this._onData);
-    await this.data.subscribeAsync();
+    await Promise.race([this.data.subscribeAsync(), dropped]);
     this.open = true;
   }
 

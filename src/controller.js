@@ -43,6 +43,7 @@ class LockController extends EventEmitter {
     this._connecting = null;
     this._commandDepth = 0;
     this._connectedAt = null;
+    this._establishing = null;
     this._queue = Promise.resolve();
   }
 
@@ -74,13 +75,19 @@ class LockController extends EventEmitter {
   }
 
   async _teardown() {
-    const session = this.session;
+    // `_establishing` matters as much as `session`: setup only assigns
+    // `session` at the very end, so a connect still in progress would
+    // otherwise be left holding a link nothing closes.
+    const sessions = new Set([this.session, this._establishing].filter(Boolean));
     this.session = null;
+    this._establishing = null;
+    this._connectedAt = null;
+
     if (this.connected) {
       this.connected = false;
       this.emit('disconnected');
     }
-    if (session) await session.close().catch(() => {});
+    for (const session of sessions) await session.close().catch(() => {});
   }
 
   // Guarded so overlapping callers share one attempt. Without this, a command
@@ -147,30 +154,46 @@ class LockController extends EventEmitter {
     session.on('disconnect', () => this._onDropped());
     session.on('error', (err) => this.log.debug?.(`${this.name}: ${err.message}`));
 
-    await session.connect();
+    // Tracked from construction, not after connect(): a failure part-way
+    // through connect() still has to be closed. noble hands back the same
+    // peripheral object every scan, so a session left open keeps its listener
+    // attached and its link half-established, and the next attempt inherits
+    // both — which is how one failure turns into a run of them.
     opened = session;
-    // Stamped the moment the link exists, so a drop during login still reports
-    // how long it survived.
-    this._connectedAt = Date.now();
-    if (await abandoned()) return;
+    this._establishing = session;
 
-    this.log.debug?.(`${this.name}: logging in`);
-    await session.login();
-    if (await abandoned()) return;
+    try {
+      await session.connect();
+      // Stamped the moment the link exists, so a drop during login still
+      // reports how long it survived.
+      this._connectedAt = Date.now();
+      if (await abandoned()) return;
 
-    this.session = session;
-    this.connected = true;
-    this._attempt = 0;
+      this.log.debug?.(`${this.name}: logging in`);
+      await session.login();
+      if (await abandoned()) return;
 
-    // Establish state immediately; pushes carry it from here.
-    const state = await ble.readStatus(session);
-    this.state = state;
-    this.emit('state', state);
-    this.emit('connected');
-    this.log.info?.(`${this.name}: connected, ${state.state.toLowerCase()}`);
+      this.session = session;
+      this.connected = true;
+      this._attempt = 0;
 
-    clearInterval(this._refreshTimer);
-    this._refreshTimer = setInterval(() => this._refresh(), this.refreshIntervalMs);
+      // Establish state immediately; pushes carry it from here.
+      const state = await ble.readStatus(session);
+      this.state = state;
+      this.emit('state', state);
+      this.emit('connected');
+      this.log.info?.(`${this.name}: connected, ${state.state.toLowerCase()}`);
+
+      clearInterval(this._refreshTimer);
+      this._refreshTimer = setInterval(() => this._refresh(), this.refreshIntervalMs);
+    } catch (err) {
+      // Release the link and drop the listener before anyone retries.
+      await session.close().catch(() => {});
+      if (this.session === session) this.session = null;
+      throw err;
+    } finally {
+      if (this._establishing === session) this._establishing = null;
+    }
   }
 
   _onDropped() {
