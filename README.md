@@ -35,6 +35,25 @@ target states are kept separate, so a jam shows up as a jammed lock rather than 
 silent failure, and the command reports an error back to Home instead of
 pretending it worked.
 
+### What gets logged
+
+```
+[Ultraloq BLE] Front Door: connected, locked        on connect, with its state
+[Ultraloq BLE] Front Door: unlocked                 a change HomeKit asked for
+[Ultraloq BLE] Front Door: locked at the lock       keypad, fingerprint, thumbturn
+[Ultraloq BLE] Front Gate: JAMMED — accepted the command but the bolt did not move
+```
+
+`at the lock` marks a change nothing here commanded, which is how keypad and
+manual use shows up. Reconnect attempts and backoff are debug level.
+
+Homebridge writes the main bridge and every child bridge to one stream, so lines
+from other plugins interleave. Filter with:
+
+```sh
+sudo journalctl -u homebridge -f | grep --line-buffered "Ultraloq BLE"
+```
+
 ### State arrives by push
 
 The connection to each lock is held open, so the lock reports changes as they

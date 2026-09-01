@@ -40,6 +40,7 @@ class LockController extends EventEmitter {
     this._reconnectTimer = null;
     this._refreshTimer = null;
     this._connecting = null;
+    this._commandDepth = 0;
     this._queue = Promise.resolve();
   }
 
@@ -101,7 +102,15 @@ class LockController extends EventEmitter {
 
       const session = new ble.LockSession(peripheral, this.credential);
       session.on('state', (state) => {
+        const previous = this.state;
         this.state = state;
+
+        // A change with no command of ours in flight came from the lock itself:
+        // the keypad, a fingerprint, or the thumbturn. Worth a log line, since
+        // it is the one event nothing else here would record.
+        if (previous && previous.state !== state.state && !this._commandDepth) {
+          this.log.info?.(`${this.name}: ${state.state.toLowerCase()} at the lock`);
+        }
         this.emit('state', state);
       });
       session.on('disconnect', () => this._onDropped());
@@ -201,12 +210,18 @@ class LockController extends EventEmitter {
   set(locked) {
     return this._enqueue(() =>
       this._withSession(async (session) => {
-        const result = await ble.setBolt(session, locked);
-        if (result.state) {
-          this.state = result.state;
-          this.emit('state', result.state);
+        // Marks our own changes, so they are not reported as keypad use.
+        this._commandDepth += 1;
+        try {
+          const result = await ble.setBolt(session, locked);
+          if (result.state) {
+            this.state = result.state;
+            this.emit('state', result.state);
+          }
+          return result;
+        } finally {
+          this._commandDepth -= 1;
         }
-        return result;
       })
     );
   }
