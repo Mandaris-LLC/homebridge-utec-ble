@@ -1,0 +1,24 @@
+{
+  "name": "u-tec-homebridge",
+  "version": "0.1.0",
+  "description": "Lock and unlock Ultraloq smart locks from the command line over Bluetooth",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "src/ble/lock.js",
+  "bin": {
+    "utec": "src/cli.js"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "utec": "node src/cli.js"
+  },
+  "dependencies": {
+    "@stoprocent/noble": "^2.8.0"
+  }
+}

@@ -1,0 +1,154 @@
+# utec
+
+Lock and unlock Ultraloq smart locks from the terminal, over Bluetooth.
+
+Node 18+ and [@stoprocent/noble](https://www.npmjs.com/package/@stoprocent/noble).
+
+## Why Bluetooth and not the cloud
+
+U-tec publishes a [cloud OpenAPI](https://doc.api.u-tec.com), but it only exposes
+locks whose connectivity is built into the lock. A lock that reaches the network
+through the **Ultraloq Bridge** WiFi adapter never appears in its device
+discovery, and no cloud command can reach it.
+
+Bluetooth lives on the lock itself rather than the Bridge, so it works
+regardless. The cost is range: the machine running this has to be near the door.
+
+## Setup
+
+```sh
+npm install
+npm link          # or run: node src/cli.js <command>
+
+utec link         # sign in once, cache the locks' Bluetooth keys
+utec pair         # identify each lock by serial number
+utec status
+```
+
+`utec link` talks to U-tec's **private** phone-app API, presenting itself as the
+iOS app, because that is the only source for a lock's Bluetooth keys. Your
+account password is used for that one exchange and is never written to disk; the
+keys it returns are static, so this is a one-time step. Being an unofficial
+interface, it can break without notice.
+
+On macOS the terminal needs Bluetooth permission: System Settings → Privacy &
+Security → Bluetooth. Without it every scan silently finds nothing.
+
+## Use
+
+```sh
+utec status              # bolt state, mode, battery
+utec unlock Front Door
+utec lock Front Door
+```
+
+With one lock the name is optional; otherwise pass any part of it. Locks sleep to
+save battery — if one is not found, touch its keypad and retry immediately.
+`UTEC_DEBUG=1` traces every command and response frame.
+
+### Diagnostics
+
+```sh
+utec scan [seconds]   # every nearby Bluetooth device
+utec probe            # find the locks, report their key exchange
+utec dump [lock]      # raw decrypted response frames (read-only)
+utec forget           # discard the cached keys
+```
+
+## How it works
+
+macOS never reveals a peripheral's MAC address — CoreBluetooth substitutes a
+per-machine UUID — so the addresses the app API returns cannot be matched against
+a scan. Locks are instead found by the service UUID they advertise (`7200`) and
+told apart by the serial number they report, which is what `utec pair` records.
+
+Commands go to characteristic `7201`, framed as:
+
+```
+0x7F | length (2, LE) | command | [uid][password] | [data] | CRC8
+```
+
+then encrypted in 16-byte blocks, each with a fresh AES-128-CBC context and a
+zero IV — so chaining never carries between blocks, which is ECB in effect. The
+CRC is CRC-8/Maxim (reflected, polynomial `0x8C`). A packet's total length is the
+length field plus 3, with the CRC last.
+
+Locks agree the AES key one of three ways depending on firmware — a static
+characteristic, an MD5 derivation, or ECDH over SECP128r1. All three are
+implemented; `utec probe` reports which a lock uses.
+
+### Actuating commands must carry credentials
+
+Reads (`LOCK_STATUS`, `GET_BATTERY`, `GET_SN`, …) are accepted unauthenticated,
+but a U-Bolt Pro rejects an `UNLOCK` or `BOLT_LOCK` that carries no uid and
+password — status byte `1` — **even after a successful `ADMIN_LOGIN`**. A
+logged-in session is not enough; the credentials go in the actuating packet
+itself.
+
+This is worth spelling out because utecio cannot do it: its `UtecBleRequest`
+takes an `auth_required` flag that no caller ever sets, so it sends every
+command unauthenticated. Confirmed against real hardware: identical uid and
+password bytes are accepted in an `ADMIN_LOGIN` and required again in the
+`UNLOCK`.
+
+`utec unlock` only reports success when a follow-up status read shows the bolt
+actually moved; anything else prints both attempts with their status bytes and
+exits non-zero.
+
+### Response layout
+
+A `LOCK_STATUS` (208) payload, as observed on a U-Bolt Pro:
+
+| Offset | Meaning |
+| --- | --- |
+| 0 | lock state — `1` unlocked, `2` locked, `3` jammed |
+| 1 | door sensor; `0` on units without one |
+| 2 | battery, `0`–`3` |
+| 3 | working mode — normal / passage / lockout |
+| 4 | mute |
+| 9.. | ASCII serial number |
+
+The lock's state is byte 0 on that scale — *not* byte 1, which is a door-sensor
+field these locks leave at `0` and would read as "unlocked" on every reading.
+`GET_LOCK_STATUS` (209) returns `[mode, bolt sensor]` instead, and answers `255`
+for the sensor on hardware that has none.
+
+### One notification can hold several frames
+
+A lock answers an actuating command twice: an immediate acknowledgement, then a
+`LOCK_STATUS` with the real outcome once the motor has run — and both can arrive
+concatenated inside a single 16-byte notification:
+
+```
+7f0300d600f2              BOLT_LOCK  accepted
+7f0700d00003000200dd      LOCK_STATUS  state 3 = jammed
+```
+
+So responses are split on frame boundaries rather than assumed one-per-packet,
+and the frame matching the command's own response code is the answer. A jam
+reported by either the deferred frame or a follow-up read is surfaced as
+`JAMMED`, since it means the bolt did not move and the door is not secured.
+
+SECP128r1 is not in Node's crypto, so [src/ble/secp128r1.js](src/ble/secp128r1.js)
+implements the group arithmetic over BigInt. It is interoperability code, not a
+general-purpose crypto library, and is not constant-time. It is checked against
+python-ecdsa across scalar multiplication, full ECDH, and invalid-point
+rejection; the framing, CRC table and AES layer are checked byte-for-byte
+against [utecio](https://github.com/maeneak/utecio), and the MD5 derivation
+against its Python original.
+
+## Layout
+
+- [src/cli.js](src/cli.js) — commands and output
+- [src/ble/cloud.js](src/ble/cloud.js) — the phone-app API, for fetching lock keys
+- [src/ble/probe.js](src/ble/probe.js) — scanning and identification
+- [src/ble/keyexchange.js](src/ble/keyexchange.js) — the three key-agreement schemes
+- [src/ble/secp128r1.js](src/ble/secp128r1.js) — ECDH over the curve Node lacks
+- [src/ble/protocol.js](src/ble/protocol.js) — framing, CRC, AES
+- [src/ble/lock.js](src/ble/lock.js) — a session with a lock
+- [src/config.js](src/config.js) — `~/.u-tec/config.json`, mode `0600`
+
+## Credits
+
+The Bluetooth protocol is derived from [utecio](https://github.com/maeneak/utecio)
+by maeneak, whose reverse-engineering made this possible.
