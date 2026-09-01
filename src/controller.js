@@ -129,7 +129,9 @@ class LockController extends EventEmitter {
     const peripheral = found.get(this.name);
     if (!peripheral) throw new Error(locks.notFoundHint(this.credential));
 
-    const session = new ble.LockSession(peripheral, this.credential);
+    const session = new ble.LockSession(peripheral, this.credential, {
+      debug: (msg) => this.log.debug?.(`${this.name}: ${msg}`),
+    });
     session.on('state', (state) => {
       const previous = this.state;
       this.state = state;
@@ -147,14 +149,17 @@ class LockController extends EventEmitter {
 
     await session.connect();
     opened = session;
+    // Stamped the moment the link exists, so a drop during login still reports
+    // how long it survived.
+    this._connectedAt = Date.now();
     if (await abandoned()) return;
 
+    this.log.debug?.(`${this.name}: logging in`);
     await session.login();
     if (await abandoned()) return;
 
     this.session = session;
     this.connected = true;
-    this._connectedAt = Date.now();
     this._attempt = 0;
 
     // Establish state immediately; pushes carry it from here.

@@ -17,7 +17,7 @@ const protocol = require('./protocol');
 const CHAR_DATA = '7201';
 const RESPONSE_TIMEOUT_MS = 15000;
 
-function debug(...args) {
+function envDebug(...args) {
   if (process.env.UTEC_DEBUG) console.error('[utec]', ...args);
 }
 
@@ -28,10 +28,12 @@ function commandName(code) {
 const STATUS_RESPONSE = protocol.COMMAND_RESPONSE[protocol.COMMANDS.LOCK_STATUS];
 
 class LockSession extends EventEmitter {
-  constructor(peripheral, credential) {
+  constructor(peripheral, credential, { debug } = {}) {
     super();
     this.peripheral = peripheral;
     this.credential = credential;
+    // Under Homebridge the trace has to reach its logger to be seen at all.
+    this.debug = debug || envDebug;
     this.key = null;
     this.keyKind = null;
     this.data = null;
@@ -57,7 +59,7 @@ class LockSession extends EventEmitter {
   async connect() {
     await this.peripheral.connectAsync();
     this.peripheral.once('disconnect', this._onDisconnect);
-    debug(`connected to ${this.peripheral.id}`);
+    this.debug(`link up to ${this.peripheral.id}`);
 
     const { characteristics } = await this.peripheral.discoverAllServicesAndCharacteristicsAsync();
     const byUuid = new Map(characteristics.map((c) => [canonUuid(c.uuid), c]));
@@ -69,7 +71,7 @@ class LockSession extends EventEmitter {
     this.key = key;
     this.keyKind = kind;
     this._stream = new protocol.FrameStream(key);
-    debug(`key agreed via ${kind}`);
+    this.debug(`key agreed via ${kind}`);
 
     this.data.on('data', this._onData);
     await this.data.subscribeAsync();
@@ -78,7 +80,7 @@ class LockSession extends EventEmitter {
 
   // Any LOCK_STATUS is the freshest truth available, whoever prompted it.
   _dispatch(frame) {
-    debug(`<- ${frame.commandName} status=${frame.statusByte} ${frame.raw.toString('hex')}`);
+    this.debug(`<- ${frame.commandName} status=${frame.statusByte} ${frame.raw.toString('hex')}`);
 
     if (frame.command === STATUS_RESPONSE) {
       const previous = this.state;
@@ -133,7 +135,7 @@ class LockSession extends EventEmitter {
       auth,
       data,
     });
-    debug(
+    this.debug(
       `-> ${commandName(command)} ` +
         protocol.redactedHex(packet, { uid: this.credential.uid, password: this.credential.password, auth })
     );
