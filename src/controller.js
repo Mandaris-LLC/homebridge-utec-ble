@@ -50,13 +50,16 @@ class LockController extends EventEmitter {
     this._connect().catch(() => {});
   }
 
+  // Must return promptly. Homebridge does not await its shutdown hook and kills
+  // the child bridge a few seconds later, and a connection killed rather than
+  // released leaves a stale link on the adapter that stops the next process
+  // reaching the lock. So tear down now; an in-flight attempt is not waited on,
+  // it checks `_stopped` at each step and closes anything it opened.
   async stop() {
     this._stopped = true;
     clearTimeout(this._reconnectTimer);
     clearInterval(this._refreshTimer);
     this._reconnectTimer = this._refreshTimer = null;
-    // Let an in-flight attempt finish so it cannot resurrect the session.
-    await this._connecting?.catch(() => {});
     await this._teardown();
   }
 
@@ -95,8 +98,19 @@ class LockController extends EventEmitter {
   async _doConnect() {
     if (this._stopped || (this.session && this.session.open)) return;
 
+    // Set at each step so a shutdown mid-connect abandons the attempt and
+    // closes whatever it had opened, rather than leaving a link behind.
+    let opened = null;
+    const abandoned = async () => {
+      if (!this._stopped) return false;
+      if (opened) await opened.close().catch(() => {});
+      return true;
+    };
+
     try {
       const found = await locks.findLocks([this.credential], { timeoutMs: SCAN_TIMEOUT_MS });
+      if (await abandoned()) return;
+
       const peripheral = found.get(this.name);
       if (!peripheral) throw new Error(locks.notFoundHint(this.credential));
 
@@ -117,7 +131,12 @@ class LockController extends EventEmitter {
       session.on('error', (err) => this.log.debug?.(`${this.name}: ${err.message}`));
 
       await session.connect();
+      opened = session;
+      if (await abandoned()) return;
+
       await session.login();
+      if (await abandoned()) return;
+
       this.session = session;
       this.connected = true;
       this._attempt = 0;
