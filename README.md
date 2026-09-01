@@ -54,6 +54,23 @@ from other plugins interleave. Filter with:
 sudo journalctl -u homebridge -f | grep --line-buffered "Ultraloq BLE"
 ```
 
+### One adapter, several locks
+
+Scanning is a global adapter mode rather than a per-device operation: when one
+caller stops scanning it stops for everyone, and a connect issued while another
+is in progress is rejected by the HCI layer — `0x0C Command Disallowed` or
+`0x02 Unknown Connection Identifier`. With a controller per lock, each doing its
+own scan, two locks will fight and neither connects reliably.
+
+So every scan-and-connect goes through a process-wide queue
+([src/ble/adapter.js](src/ble/adapter.js)). Established connections coexist
+happily — an adapter handles several links at once — it is only the setup that
+must not overlap. The cost is that a sleeping lock's full scan timeout delays the
+next lock's attempt.
+
+The CLI cannot help here: it is a separate process, so it contends with the
+plugin for the same adapter. Stop Homebridge before using it.
+
 ### State arrives by push
 
 The connection to each lock is held open, so the lock reports changes as they

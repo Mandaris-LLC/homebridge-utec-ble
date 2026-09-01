@@ -16,6 +16,7 @@ const { EventEmitter } = require('events');
 
 const ble = require('./ble/lock');
 const locks = require('./locks');
+const { withAdapter } = require('./ble/adapter');
 
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 60000;
@@ -98,8 +99,20 @@ class LockController extends EventEmitter {
   async _doConnect() {
     if (this._stopped || (this.session && this.session.open)) return;
 
-    // Set at each step so a shutdown mid-connect abandons the attempt and
-    // closes whatever it had opened, rather than leaving a link behind.
+    try {
+      // Scanning is a global adapter mode and overlapping connects are rejected
+      // by the HCI layer, so only one lock may be set up at a time. Established
+      // connections coexist fine — it is only the setup that must not overlap.
+      await withAdapter(() => this._establish());
+    } catch (err) {
+      await this._teardown();
+      this._scheduleReconnect(err);
+    }
+  }
+
+  async _establish() {
+    // Checked at each step so a shutdown mid-connect abandons the attempt and
+    // closes whatever it opened, rather than leaving a link on the adapter.
     let opened = null;
     const abandoned = async () => {
       if (!this._stopped) return false;
@@ -107,53 +120,50 @@ class LockController extends EventEmitter {
       return true;
     };
 
-    try {
-      const found = await locks.findLocks([this.credential], { timeoutMs: SCAN_TIMEOUT_MS });
-      if (await abandoned()) return;
+    if (await abandoned()) return;
 
-      const peripheral = found.get(this.name);
-      if (!peripheral) throw new Error(locks.notFoundHint(this.credential));
+    const found = await locks.findLocks([this.credential], { timeoutMs: SCAN_TIMEOUT_MS });
+    if (await abandoned()) return;
 
-      const session = new ble.LockSession(peripheral, this.credential);
-      session.on('state', (state) => {
-        const previous = this.state;
-        this.state = state;
+    const peripheral = found.get(this.name);
+    if (!peripheral) throw new Error(locks.notFoundHint(this.credential));
 
-        // A change with no command of ours in flight came from the lock itself:
-        // the keypad, a fingerprint, or the thumbturn. Worth a log line, since
-        // it is the one event nothing else here would record.
-        if (previous && previous.state !== state.state && !this._commandDepth) {
-          this.log.info?.(`${this.name}: ${state.state.toLowerCase()} at the lock`);
-        }
-        this.emit('state', state);
-      });
-      session.on('disconnect', () => this._onDropped());
-      session.on('error', (err) => this.log.debug?.(`${this.name}: ${err.message}`));
-
-      await session.connect();
-      opened = session;
-      if (await abandoned()) return;
-
-      await session.login();
-      if (await abandoned()) return;
-
-      this.session = session;
-      this.connected = true;
-      this._attempt = 0;
-
-      // Establish state immediately; pushes carry it from here.
-      const state = await ble.readStatus(session);
+    const session = new ble.LockSession(peripheral, this.credential);
+    session.on('state', (state) => {
+      const previous = this.state;
       this.state = state;
-      this.emit('state', state);
-      this.emit('connected');
-      this.log.info?.(`${this.name}: connected, ${state.state.toLowerCase()}`);
 
-      clearInterval(this._refreshTimer);
-      this._refreshTimer = setInterval(() => this._refresh(), this.refreshIntervalMs);
-    } catch (err) {
-      await this._teardown();
-      this._scheduleReconnect(err);
-    }
+      // A change with no command of ours in flight came from the lock itself:
+      // the keypad, a fingerprint, or the thumbturn. Worth a log line, since
+      // it is the one event nothing else here would record.
+      if (previous && previous.state !== state.state && !this._commandDepth) {
+        this.log.info?.(`${this.name}: ${state.state.toLowerCase()} at the lock`);
+      }
+      this.emit('state', state);
+    });
+    session.on('disconnect', () => this._onDropped());
+    session.on('error', (err) => this.log.debug?.(`${this.name}: ${err.message}`));
+
+    await session.connect();
+    opened = session;
+    if (await abandoned()) return;
+
+    await session.login();
+    if (await abandoned()) return;
+
+    this.session = session;
+    this.connected = true;
+    this._attempt = 0;
+
+    // Establish state immediately; pushes carry it from here.
+    const state = await ble.readStatus(session);
+    this.state = state;
+    this.emit('state', state);
+    this.emit('connected');
+    this.log.info?.(`${this.name}: connected, ${state.state.toLowerCase()}`);
+
+    clearInterval(this._refreshTimer);
+    this._refreshTimer = setInterval(() => this._refresh(), this.refreshIntervalMs);
   }
 
   _onDropped() {
