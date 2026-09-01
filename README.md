@@ -21,9 +21,16 @@ npm install
 npm link          # or run: node src/cli.js <command>
 
 utec link         # sign in once, cache the locks' Bluetooth keys
-utec pair         # identify each lock by serial number
 utec status
 ```
+
+On **Linux** that is all you need: the adapter reports each lock's real MAC
+address, which is matched against what `link` cached.
+
+On **macOS** CoreBluetooth withholds MAC addresses and substitutes a per-machine
+UUID, so a lock cannot be recognised by address there. Run `utec pair` once — it
+connects to each lock, reads its serial number, and records the local peripheral
+id. Only needed on macOS, and only once per machine.
 
 `utec link` talks to U-tec's **private** phone-app API, presenting itself as the
 iOS app, because that is the only source for a lock's Bluetooth keys. Your
@@ -57,10 +64,36 @@ utec forget           # discard the cached keys
 
 ## How it works
 
-macOS never reveals a peripheral's MAC address — CoreBluetooth substitutes a
-per-machine UUID — so the addresses the app API returns cannot be matched against
-a scan. Locks are instead found by the service UUID they advertise (`7200`) and
-told apart by the serial number they report, which is what `utec pair` records.
+A lock is recognised by its MAC address where the platform reports one (Linux
+does, and uses it as the peripheral id) or by the peripheral id `utec pair`
+recorded. macOS reveals no MAC — CoreBluetooth substitutes a per-machine UUID —
+which is why pairing by serial number exists at all. When nothing specific is
+being looked for, locks are found by the service UUID they advertise (`7200`),
+which works everywhere.
+
+### Running on a Raspberry Pi
+
+Bluetooth needs raw socket access. For a Homebridge service, grant it to the
+service rather than the binary, since Homebridge replaces its bundled Node on
+update and would silently drop a `setcap`:
+
+```sh
+sudo mkdir -p /etc/systemd/system/homebridge.service.d
+sudo tee /etc/systemd/system/homebridge.service.d/bluetooth.conf <<'EOF'
+[Service]
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart homebridge
+```
+
+To run by hand, `sudo setcap cap_net_raw+eip "$(readlink -f "$(which node)")"`.
+noble's bindings are native, so install with the same npm as the Node that will
+load them — `/opt/homebridge/bin/npm` on a packaged Homebridge — or expect
+`NODE_MODULE_VERSION` errors. `libudev-dev` is required to build them.
+
+[tools/ble-discover.js](tools/ble-discover.js) is a standalone scanner that
+depends only on noble, for checking reachability before installing anything.
 
 Commands go to characteristic `7201`, framed as:
 
