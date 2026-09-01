@@ -5,6 +5,7 @@ const readline = require('readline');
 
 const cloud = require('./ble/cloud');
 const config = require('./config');
+const locksModule = require('./locks');
 
 const USAGE = `
 utec — lock and unlock Ultraloq locks over Bluetooth
@@ -52,9 +53,7 @@ function promptSecret(question) {
 }
 
 function cachedLocks() {
-  const locks = config.read().bleLocks;
-  if (!locks || !locks.length) throw new Error('No cached Bluetooth keys. Run `utec link` first.');
-  return locks;
+  return locksModule.loadLocks();
 }
 
 // Accept `utec lock Front Door` unquoted as well as quoted.
@@ -62,55 +61,16 @@ function deviceHint(args) {
   return args.filter((a) => !a.startsWith('-')).join(' ');
 }
 
-// A lock can be recognised by its MAC (Linux reports it) or by the peripheral
-// id that `pair` recorded (needed on macOS, which hides MACs).
-function identifiersFor(lock) {
-  return [lock.address, lock.peripheralId].filter(Boolean);
-}
-
-// Narrow the cached locks to the ones the user means.
 function selectLocks(args, { single = false } = {}) {
-  const locks = cachedLocks();
-  const hint = deviceHint(args).toLowerCase();
-
-  const chosen = hint ? locks.filter((l) => l.name.toLowerCase().includes(hint)) : locks;
-  if (!chosen.length) throw new Error(`No cached lock matching "${hint}".`);
-
+  const chosen = locksModule.selectLocks(deviceHint(args));
   if (single && chosen.length > 1) {
     throw new Error(`Name one lock:\n${chosen.map((l) => `  ${l.name}`).join('\n')}`);
-  }
-
-  const unidentifiable = chosen.filter((l) => !identifiersFor(l).length);
-  if (unidentifiable.length) {
-    throw new Error(
-      `${unidentifiable.map((l) => l.name).join(', ')} has no address or paired id.\n` +
-        'Run `utec link` again, then `utec pair`.'
-    );
   }
   return chosen;
 }
 
-// Resolve each chosen lock to a live peripheral, matching on either identifier.
-async function connectTo(locks) {
-  const { findPeripherals, identifiersOf, normalize } = require('./ble/probe');
-  const peripherals = await findPeripherals({ ids: locks.flatMap(identifiersFor) });
-
-  const byLock = new Map();
-  for (const lock of locks) {
-    const wanted = new Set(identifiersFor(lock).map(normalize));
-    const match = peripherals.find((p) => identifiersOf(p).some((id) => wanted.has(id)));
-    if (match) byLock.set(lock.name, match);
-  }
-  return byLock;
-}
-
-// Explains a miss differently depending on whether the platform can see MACs.
-function notFoundHint(lock) {
-  return lock.peripheralId
-    ? 'not in range (or asleep — touch the keypad).'
-    : 'not found. If this machine hides MAC addresses (macOS), run `utec pair` first;\n' +
-      '  otherwise it is out of range or asleep — touch the keypad.';
-}
+const connectTo = (locks) => locksModule.findLocks(locks);
+const notFoundHint = (lock) => `${locksModule.notFoundHint(lock)}.`;
 
 function describeState(state) {
   if (!state) return 'state unavailable';

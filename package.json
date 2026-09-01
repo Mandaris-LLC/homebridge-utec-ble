@@ -1,19 +1,33 @@
 {
-  "name": "u-tec-homebridge",
+  "name": "homebridge-utec-ble",
+  "displayName": "Ultraloq BLE",
   "version": "0.1.0",
-  "description": "Lock and unlock Ultraloq smart locks from the command line over Bluetooth",
+  "description": "HomeKit support for Ultraloq smart locks over Bluetooth, including locks behind a Bridge adapter that the U-tec cloud API cannot reach",
   "license": "ISC",
   "author": "",
   "type": "commonjs",
-  "main": "src/ble/lock.js",
+  "main": "index.js",
   "bin": {
     "utec": "src/cli.js"
   },
   "files": [
-    "src"
+    "index.js",
+    "src",
+    "tools",
+    "config.schema.json"
+  ],
+  "keywords": [
+    "homebridge-plugin",
+    "ultraloq",
+    "u-tec",
+    "utec",
+    "lock",
+    "ble",
+    "bluetooth"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "homebridge": "^1.6.0 || ^2.0.0"
   },
   "scripts": {
     "utec": "node src/cli.js"

@@ -1,8 +1,50 @@
-# utec
+# homebridge-utec-ble
 
-Lock and unlock Ultraloq smart locks from the terminal, over Bluetooth.
+HomeKit support for Ultraloq smart locks over Bluetooth — including locks behind
+a Bridge adapter, which the U-tec cloud API cannot reach at all. Ships with a
+`utec` CLI for setup and diagnostics.
 
 Node 18+ and [@stoprocent/noble](https://www.npmjs.com/package/@stoprocent/noble).
+
+## Homebridge
+
+Run `utec link` first, as the **same user Homebridge runs as** — the plugin reads
+the keys that caches and never signs in to U-tec itself. Then add the platform:
+
+```json
+{
+  "platforms": [
+    {
+      "platform": "UtecBLE",
+      "name": "Ultraloq BLE",
+      "_bridge": { "username": "0E:12:34:56:78:90", "port": 51900 }
+    }
+  ]
+}
+```
+
+`_bridge` runs it as a **child bridge**, which is strongly recommended: each lock
+holds an open Bluetooth connection, and that work should not sit in Homebridge's
+main process where a stall would affect every other accessory.
+
+Optional settings: `locks` (an array of names — use it when one host cannot reach
+every door) and `refreshMinutes` (the safety-net poll, default 15).
+
+Each lock becomes a `LockMechanism` with a battery service. HomeKit's current and
+target states are kept separate, so a jam shows up as a jammed lock rather than a
+silent failure, and the command reports an error back to Home instead of
+pretending it worked.
+
+### State arrives by push
+
+The connection to each lock is held open, so the lock reports changes as they
+happen — including **keypad and manual use**, which appears in Home within
+seconds without polling. Two consequences worth knowing:
+
+- **These locks accept one connection at a time.** While the plugin holds it, the
+  U-tec phone app cannot connect. Stopping Homebridge releases them.
+- It costs lock battery. `refreshMinutes` only catches what pushes miss, so
+  leave it infrequent.
 
 ## Why Bluetooth and not the cloud
 
@@ -172,6 +214,11 @@ against its Python original.
 
 ## Layout
 
+- [index.js](index.js) — Homebridge entry point
+- [src/homebridge/platform.js](src/homebridge/platform.js) — dynamic platform, one accessory per lock
+- [src/homebridge/accessory.js](src/homebridge/accessory.js) — the HomeKit LockMechanism
+- [src/controller.js](src/controller.js) — holds a lock's connection open, reconnects, serialises commands
+- [src/locks.js](src/locks.js) — lock identity and discovery, shared by the CLI and the platform
 - [src/cli.js](src/cli.js) — commands and output
 - [src/ble/cloud.js](src/ble/cloud.js) — the phone-app API, for fetching lock keys
 - [src/ble/probe.js](src/ble/probe.js) — scanning and identification

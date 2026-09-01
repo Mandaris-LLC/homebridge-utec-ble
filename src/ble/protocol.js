@@ -194,6 +194,48 @@ function parseFrames(buffer) {
   return frames;
 }
 
+// A frame can never legitimately be this long; anything claiming to be is
+// corruption, and the buffer is dropped rather than stalling forever.
+const MAX_FRAME = 2048;
+
+// Decodes a continuous notification stream into frames. Used when the
+// connection is held open: one subscription, frames arriving at any time —
+// whether answering a command or reporting a change nobody asked about.
+class FrameStream {
+  constructor(key) {
+    this.key = key;
+    this.buffer = Buffer.alloc(0);
+  }
+
+  // Returns every complete frame the chunk completed, in order.
+  push(chunk) {
+    const plain = decrypt(Buffer.from(chunk), this.key);
+    if (!plain.length) return [];
+
+    this.buffer = Buffer.concat([this.buffer, plain]);
+    const frames = [];
+
+    while (this.buffer.length >= 5 && this.buffer[0] === START) {
+      const dataLength = this.buffer.readUInt16LE(1);
+      if (dataLength < 1 || dataLength > MAX_FRAME) {
+        this.buffer = Buffer.alloc(0);
+        break;
+      }
+
+      const total = dataLength + 3;
+      if (this.buffer.length < total) break; // still arriving
+
+      frames.push(makeFrame(Buffer.from(this.buffer.subarray(0, total))));
+      this.buffer = Buffer.from(this.buffer.subarray(total));
+    }
+
+    // Writes start on a block boundary, so a remainder that cannot begin a
+    // frame is the zero padding of the last one.
+    if (this.buffer.length && this.buffer[0] !== START) this.buffer = Buffer.alloc(0);
+    return frames;
+  }
+}
+
 // Responses arrive across several BLE notifications, so accumulate until the
 // declared length is satisfied.
 class ResponseAssembler {
@@ -300,5 +342,6 @@ module.exports = {
   START, BLOCK, COMMANDS, RESPONSES, COMMAND_RESPONSE,
   LOCK_STATE, BOLT_STATUS, LOCK_MODE, BATTERY_LEVEL,
   CRC8_TABLE, crc8, encodeAuth, buildRequest, encrypt, decrypt,
-  makeFrame, parseFrames, ResponseAssembler, parseLockStatus, parseGetLockStatus,
+  makeFrame, parseFrames, FrameStream, ResponseAssembler,
+  parseLockStatus, parseGetLockStatus,
 };

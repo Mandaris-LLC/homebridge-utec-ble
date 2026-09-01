@@ -1,7 +1,14 @@
 'use strict';
 
-// One BLE conversation with a lock: connect, agree a key, then exchange
-// framed commands on the data characteristic.
+// A conversation with a lock: connect, agree a key, then exchange framed
+// commands on the data characteristic.
+//
+// The subscription is opened once and held, because a lock reports changes
+// nobody asked for — the outcome of a command once its motor has run, and a
+// state change when someone uses the keypad. Frames are routed to whichever
+// request is waiting for them; anything unclaimed is a push.
+
+const { EventEmitter } = require('events');
 
 const { canonUuid } = require('./probe');
 const { establishKey, timeout } = require('./keyexchange');
@@ -14,17 +21,42 @@ function debug(...args) {
   if (process.env.UTEC_DEBUG) console.error('[utec]', ...args);
 }
 
-class LockSession {
+function commandName(code) {
+  return Object.keys(protocol.COMMANDS).find((k) => protocol.COMMANDS[k] === code) || code;
+}
+
+const STATUS_RESPONSE = protocol.COMMAND_RESPONSE[protocol.COMMANDS.LOCK_STATUS];
+
+class LockSession extends EventEmitter {
   constructor(peripheral, credential) {
+    super();
     this.peripheral = peripheral;
     this.credential = credential;
     this.key = null;
     this.keyKind = null;
     this.data = null;
+    this.state = null;
+    this.open = false;
+
+    this._stream = null;
+    this._pending = [];
+    this._onData = (chunk) => {
+      try {
+        for (const frame of this._stream.push(chunk)) this._dispatch(frame);
+      } catch (err) {
+        this.emit('error', err);
+      }
+    };
+    this._onDisconnect = () => {
+      this.open = false;
+      this._failPending(new Error('Lock disconnected.'));
+      this.emit('disconnect');
+    };
   }
 
-  async open() {
+  async connect() {
     await this.peripheral.connectAsync();
+    this.peripheral.once('disconnect', this._onDisconnect);
     debug(`connected to ${this.peripheral.id}`);
 
     const { characteristics } = await this.peripheral.discoverAllServicesAndCharacteristicsAsync();
@@ -36,63 +68,108 @@ class LockSession {
     const { kind, key } = await establishKey(byUuid);
     this.key = key;
     this.keyKind = kind;
+    this._stream = new protocol.FrameStream(key);
     debug(`key agreed via ${kind}`);
+
+    this.data.on('data', this._onData);
+    await this.data.subscribeAsync();
+    this.open = true;
   }
 
-  // Writes one command and waits for the matching framed response.
-  async request(command, { auth = false, data } = {}) {
-    const assembler = new protocol.ResponseAssembler(this.key);
+  // Any LOCK_STATUS is the freshest truth available, whoever prompted it.
+  _dispatch(frame) {
+    debug(`<- ${frame.commandName} status=${frame.statusByte} ${frame.raw.toString('hex')}`);
 
-    let resolveDone;
-    const done = new Promise((resolve) => (resolveDone = resolve));
-    const onData = (chunk) => {
-      if (assembler.append(chunk)) resolveDone();
-    };
+    if (frame.command === STATUS_RESPONSE) {
+      const previous = this.state;
+      this.state = protocol.parseLockStatus(frame);
+      if (!previous || previous.state !== this.state.state) {
+        this.emit('state', this.state, previous);
+      }
+    }
 
-    this.data.on('data', onData);
-    try {
-      await this.data.subscribeAsync();
+    const index = this._pending.findIndex((p) => p.expect === frame.command);
+    if (index !== -1) {
+      const waiter = this._pending.splice(index, 1)[0];
+      clearTimeout(waiter.timer);
+      waiter.resolve(frame);
+      return;
+    }
+    // Nobody asked for this one — a keypad entry, or a deferred outcome.
+    this.emit('push', frame);
+  }
 
-      const packet = protocol.buildRequest(command, {
-        uid: this.credential.uid,
-        password: this.credential.password,
-        auth,
-        data,
-      });
-      debug(`-> ${commandName(command)} ${packet.toString('hex')}`);
-      await this.data.writeAsync(protocol.encrypt(packet, this.key), false);
+  _discard(waiter) {
+    const index = this._pending.indexOf(waiter);
+    if (index !== -1) this._pending.splice(index, 1);
+    clearTimeout(waiter.timer);
+  }
 
-      await timeout(done, RESPONSE_TIMEOUT_MS, `Lock did not answer ${commandName(command)}.`);
-
-      // A notification can carry the acknowledgement plus a deferred status
-      // report, so pick out the frame that actually answers this command.
-      const frames = assembler.frames();
-      const expected = protocol.COMMAND_RESPONSE[command];
-      const answer = frames.find((f) => f.command === expected) || frames[0] || assembler;
-
-      for (const f of frames) debug(`<- ${f.commandName} status=${f.statusByte} ${f.raw.toString('hex')}`);
-      return Object.assign(answer, { frames });
-    } finally {
-      this.data.removeListener('data', onData);
-      await this.data.unsubscribeAsync().catch(() => {});
+  _failPending(err) {
+    const waiting = this._pending.splice(0);
+    for (const waiter of waiting) {
+      clearTimeout(waiter.timer);
+      waiter.reject(err);
     }
   }
 
+  async request(command, { auth = false, data } = {}) {
+    if (!this.open) throw new Error('Session is not open.');
+
+    const expect = protocol.COMMAND_RESPONSE[command];
+    let waiter;
+    const answer = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._discard(waiter);
+        reject(new Error(`Lock did not answer ${commandName(command)}.`));
+      }, RESPONSE_TIMEOUT_MS);
+      waiter = { expect, resolve, reject, timer };
+      this._pending.push(waiter);
+    });
+
+    const packet = protocol.buildRequest(command, {
+      uid: this.credential.uid,
+      password: this.credential.password,
+      auth,
+      data,
+    });
+    debug(`-> ${commandName(command)} ${packet.toString('hex')}`);
+
+    try {
+      await this.data.writeAsync(protocol.encrypt(packet, this.key), false);
+    } catch (err) {
+      // Drop the waiter, or its timer would later reject a promise nobody is
+      // holding — an unhandled rejection, which would take Homebridge down.
+      this._discard(waiter);
+      answer.catch(() => {});
+      throw err;
+    }
+
+    return answer;
+  }
+
+  async login() {
+    return this.request(protocol.COMMANDS.ADMIN_LOGIN, { auth: true });
+  }
+
   async close() {
+    this.open = false;
+    this._failPending(new Error('Session closed.'));
+    this.peripheral.removeListener('disconnect', this._onDisconnect);
+    if (this.data) {
+      this.data.removeListener('data', this._onData);
+      await this.data.unsubscribeAsync().catch(() => {});
+    }
     await this.peripheral.disconnectAsync().catch(() => {});
   }
 }
 
-function commandName(code) {
-  return Object.keys(protocol.COMMANDS).find((k) => protocol.COMMANDS[k] === code) || code;
-}
-
-// Every operation logs in first, matching the app's own sequence.
+// One-shot use: open, log in, do the work, hang up.
 async function withSession(peripheral, credential, fn) {
   const session = new LockSession(peripheral, credential);
   try {
-    await session.open();
-    await session.request(protocol.COMMANDS.ADMIN_LOGIN, { auth: true });
+    await session.connect();
+    await session.login();
     return await fn(session);
   } finally {
     await session.close();
@@ -100,8 +177,8 @@ async function withSession(peripheral, credential, fn) {
 }
 
 async function readStatus(session) {
-  const res = await session.request(protocol.COMMANDS.LOCK_STATUS);
-  return protocol.parseLockStatus(res);
+  const frame = await session.request(protocol.COMMANDS.LOCK_STATUS);
+  return protocol.parseLockStatus(frame);
 }
 
 // Read commands are accepted unauthenticated, but a U-Bolt Pro rejects an
@@ -114,32 +191,28 @@ async function readStatus(session) {
 const BOLT_AUTH_MODES = [true, false];
 
 // Reports what the lock actually said rather than asserting an outcome; the
-// follow-up status read is the ground truth, and a disagreement is surfaced.
+// state read back afterwards is the ground truth.
 async function setBolt(session, locked, { authModes = BOLT_AUTH_MODES } = {}) {
   const command = locked ? protocol.COMMANDS.BOLT_LOCK : protocol.COMMANDS.UNLOCK;
 
   const attempts = [];
   let acknowledged = false;
-  let deferred = null;
 
   for (const auth of authModes) {
-    const res = await session.request(command, { auth });
-    attempts.push({ auth, status: res.statusByte, raw: res.raw.toString('hex') });
-
-    // The lock often appends the real outcome once the motor has run.
-    const report = (res.frames || []).find((f) => f.command === protocol.COMMAND_RESPONSE[protocol.COMMANDS.LOCK_STATUS]);
-    if (report) deferred = protocol.parseLockStatus(report);
-
-    if (res.success) {
+    const frame = await session.request(command, { auth });
+    attempts.push({ auth, status: frame.statusByte, raw: frame.raw.toString('hex') });
+    if (frame.success) {
       acknowledged = true;
       break;
     }
   }
 
+  // The lock usually pushes a LOCK_STATUS once the motor has run, which the
+  // session records on its own. Read again anyway: a jam can settle after.
+  const deferred = session.state;
   let state = deferred;
   let stateError = null;
   try {
-    // Re-read regardless: a jam can settle differently once the motor stops.
     state = await readStatus(session);
   } catch (err) {
     stateError = err.message;
@@ -148,8 +221,8 @@ async function setBolt(session, locked, { authModes = BOLT_AUTH_MODES } = {}) {
 }
 
 async function readSerial(session) {
-  const res = await session.request(protocol.COMMANDS.GET_SN);
-  return res.data.toString('latin1').replace(/\0.*$/, '');
+  const frame = await session.request(protocol.COMMANDS.GET_SN);
+  return frame.data.toString('latin1').replace(/\0.*$/, '');
 }
 
 // Read-only sweep used to decode response layouts against a lock whose physical
@@ -160,16 +233,16 @@ async function dumpReads(session) {
   const frames = [];
   for (const name of DUMP_COMMANDS) {
     try {
-      const res = await session.request(protocol.COMMANDS[name]);
+      const f = await session.request(protocol.COMMANDS[name]);
       frames.push({
         command: name,
-        raw: res.buffer.toString('hex'),
-        replyName: res.commandName,
-        replyCode: res.command,
-        dataLength: res.dataLength,
-        crcValid: res.crcValid,
-        statusByte: res.buffer[4],
-        payload: res.data.toString('hex'),
+        raw: f.raw.toString('hex'),
+        replyName: f.commandName,
+        replyCode: f.command,
+        dataLength: f.dataLength,
+        crcValid: f.crcValid,
+        statusByte: f.statusByte,
+        payload: f.data.toString('hex'),
       });
     } catch (err) {
       frames.push({ command: name, error: err.message });
