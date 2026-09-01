@@ -1,4 +1,13 @@
 node_modules/
+
+# Never commit lock credentials or debug traces. `utec link` writes to
+# ~/.u-tec/config.json outside the repo, but a stray copy or redirected log
+# would contain a lock's uid and admin PIN.
+.u-tec/
+config.json
 *.log
-.DS_Store
+*.trace
+utec-debug*
+
 .env
+.DS_Store

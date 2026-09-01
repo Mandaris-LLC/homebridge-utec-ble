@@ -133,7 +133,10 @@ class LockSession extends EventEmitter {
       auth,
       data,
     });
-    debug(`-> ${commandName(command)} ${packet.toString('hex')}`);
+    debug(
+      `-> ${commandName(command)} ` +
+        protocol.redactedHex(packet, { uid: this.credential.uid, password: this.credential.password, auth })
+    );
 
     try {
       await this.data.writeAsync(protocol.encrypt(packet, this.key), false);

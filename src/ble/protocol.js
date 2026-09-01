@@ -107,6 +107,21 @@ function encodeAuth(uid, password) {
   return Buffer.concat(parts);
 }
 
+// Hex for logs with the credential block blanked out. An authenticated packet
+// carries the uid and the lock's admin PIN in clear bytes, and traces get pasted
+// into bug reports — so they must never be printed verbatim.
+function redactedHex(packet, { uid, password, auth = false } = {}) {
+  const hex = packet.toString('hex');
+  if (!auth) return hex;
+
+  const authLength = (uid ? 4 : 0) + (password ? 4 : 0);
+  if (!authLength) return hex;
+
+  const start = 4 * 2;
+  const end = start + authLength * 2;
+  return hex.slice(0, start) + '..'.repeat(authLength) + hex.slice(end);
+}
+
 function buildRequest(command, { uid, password, data = Buffer.alloc(0), auth = false } = {}) {
   const body = Buffer.concat([
     auth ? encodeAuth(uid, password) : Buffer.alloc(0),
@@ -341,7 +356,7 @@ function parseGetLockStatus(assembler) {
 module.exports = {
   START, BLOCK, COMMANDS, RESPONSES, COMMAND_RESPONSE,
   LOCK_STATE, BOLT_STATUS, LOCK_MODE, BATTERY_LEVEL,
-  CRC8_TABLE, crc8, encodeAuth, buildRequest, encrypt, decrypt,
+  CRC8_TABLE, crc8, encodeAuth, redactedHex, buildRequest, encrypt, decrypt,
   makeFrame, parseFrames, FrameStream, ResponseAssembler,
   parseLockStatus, parseGetLockStatus,
 };

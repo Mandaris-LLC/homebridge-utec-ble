@@ -228,6 +228,32 @@ against its Python original.
 - [src/ble/lock.js](src/ble/lock.js) — a session with a lock
 - [src/config.js](src/config.js) — `~/.u-tec/config.json`, mode `0600`
 
+## Security
+
+**`~/.u-tec/config.json` is a key to your front door.** It holds each lock's uid
+and admin PIN, which is everything needed to unlock it from within Bluetooth
+range. It is written mode `0600`, but that only protects it from other users —
+anyone who can read that file, or take a backup containing it, can open the
+locks. Treat shell access to the host accordingly.
+
+The U-tec **account password** is not stored. `utec link` uses it once to fetch
+the per-lock keys and discards it.
+
+**`UTEC_DEBUG=1` traces are safe to share.** The credential bytes are masked
+(`7f0a0020................1b`), because authenticated packets carry the admin PIN
+in clear and traces end up pasted into bug reports. The packet actually sent is
+unaffected. Everything else in a trace — commands, state, serial numbers — is
+not secret.
+
+**The key agreement is unauthenticated.** ECDH over SECP128r1 establishes an
+encrypted channel but never verifies *who* is on the other end, so someone in
+radio range could in principle interpose. They would still need the uid and PIN
+to actuate the lock. This is the firmware's design, not a choice made here.
+
+The curve implementation is **not constant-time**. It is interoperability code
+for a lock you own, not a general-purpose crypto library — do not reuse it as
+one.
+
 ## Credits
 
 The Bluetooth protocol is derived from [utecio](https://github.com/maeneak/utecio)
