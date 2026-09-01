@@ -42,6 +42,7 @@ class LockController extends EventEmitter {
     this._refreshTimer = null;
     this._connecting = null;
     this._commandDepth = 0;
+    this._connectedAt = null;
     this._queue = Promise.resolve();
   }
 
@@ -153,6 +154,7 @@ class LockController extends EventEmitter {
 
     this.session = session;
     this.connected = true;
+    this._connectedAt = Date.now();
     this._attempt = 0;
 
     // Establish state immediately; pushes carry it from here.
@@ -169,12 +171,22 @@ class LockController extends EventEmitter {
   _onDropped() {
     if (this._stopped) return;
     this.session = null;
+
+    // How long the link survived is the thing worth knowing. A few seconds
+    // every time means the lock is closing idle connections to save battery,
+    // and holding one open is the wrong design for this hardware. Minutes or
+    // hours means ordinary radio flakiness.
+    const held = this._connectedAt ? Math.round((Date.now() - this._connectedAt) / 1000) : null;
+    this._connectedAt = null;
+
     if (this.connected) {
       this.connected = false;
       this.emit('disconnected');
     }
     clearInterval(this._refreshTimer);
-    this._scheduleReconnect(new Error('connection dropped'));
+    this._scheduleReconnect(
+      new Error(held === null ? 'connection dropped' : `connection dropped after ${held}s`)
+    );
   }
 
   // Exponential backoff, capped — a lock that is asleep or out of range should
