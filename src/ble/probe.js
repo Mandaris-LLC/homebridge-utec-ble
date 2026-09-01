@@ -51,6 +51,26 @@ async function ensurePoweredOn(noble) {
   });
 }
 
+// The adapter takes one owner at a time. When something else holds it, the
+// HCI layer rejects our commands with codes that say nothing useful on their
+// own — so explain the situation rather than passing the code through.
+const CONTENTION = /command disallowed|0xc\b|0x0c|busy|EPERM|not permitted|already/i;
+
+function explainAdapterError(err) {
+  if (!CONTENTION.test(err.message)) return err;
+
+  return new Error(
+    `${err.message}\n\n` +
+      'The Bluetooth adapter rejected the command, which usually means another\n' +
+      'process already owns it. One adapter serves one client at a time:\n' +
+      '  - Homebridge running this plugin holds it. Stop it while using the CLI:\n' +
+      '      sudo systemctl stop homebridge\n' +
+      '  - Or the adapter is stuck with scanning left enabled:\n' +
+      '      sudo hciconfig hci0 down && sudo hciconfig hci0 up\n' +
+      '  - bluetoothd can also interfere: systemctl is-active bluetooth'
+  );
+}
+
 // Every identifier a peripheral can be recognised by. Linux reports the real
 // MAC address (and uses it as the id); macOS withholds it and substitutes a
 // per-machine UUID, so both are checked and either is enough.
@@ -115,7 +135,9 @@ async function probe({ ids = [], timeoutMs = 20000 } = {}) {
   const noble = loadNoble();
   await ensurePoweredOn(noble);
 
-  const found = await findLocks(noble, { timeoutMs, ids });
+  const found = await findLocks(noble, { timeoutMs, ids }).catch((err) => {
+    throw explainAdapterError(err);
+  });
 
   const results = [];
   for (const peripheral of found.values()) {
@@ -155,7 +177,12 @@ async function scanAll({ timeoutMs = 15000 } = {}) {
   };
 
   noble.on('discover', onDiscover);
-  await noble.startScanningAsync([], true);
+  try {
+    await noble.startScanningAsync([], true);
+  } catch (err) {
+    noble.removeListener('discover', onDiscover);
+    throw explainAdapterError(err);
+  }
   await new Promise((r) => setTimeout(r, timeoutMs));
   noble.removeListener('discover', onDiscover);
   await noble.stopScanningAsync().catch(() => {});
@@ -176,10 +203,13 @@ async function scanAll({ timeoutMs = 15000 } = {}) {
 async function findPeripherals({ ids = [], timeoutMs = 20000 } = {}) {
   const noble = loadNoble();
   await ensurePoweredOn(noble);
-  return [...(await findLocks(noble, { timeoutMs, ids })).values()];
+  const found = await findLocks(noble, { timeoutMs, ids }).catch((err) => {
+    throw explainAdapterError(err);
+  });
+  return [...found.values()];
 }
 
 module.exports = {
-  probe, scanAll, findPeripherals, identifiersOf, normalize,
+  probe, scanAll, findPeripherals, identifiersOf, normalize, explainAdapterError,
   KEY_KINDS, SERVICE_LOCK, canonUuid,
 };
