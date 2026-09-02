@@ -22,7 +22,9 @@ Diagnostics:
   utec scan [seconds]      List every nearby Bluetooth device
   utec probe               Find the locks and report their key exchange
   utec dump [lock]         Print raw decrypted response frames (read-only)
-  utec doctor              Check the environment (safe while Homebridge runs)\n  utec forget              Discard the cached Bluetooth keys
+  utec test [lock]         Try every way of connecting, report which works
+  utec doctor              Check the environment (safe while Homebridge runs)
+  utec forget              Discard the cached Bluetooth keys
 
 [lock] is a lock name, or any part of one. Omit it when you have one lock.
 Set UTEC_DEBUG=1 to trace every command and response frame.
@@ -223,6 +225,95 @@ const commands = {
     }
     console.log(`${bad.length} thing(s) to look at, listed above.`);
     process.exitCode = 1;
+  },
+
+  // Tries each way of reaching a lock and reports which works.
+  //
+  // The adapter mode is fixed when noble is first required, so it cannot be
+  // changed within one process — each combination runs in its own child.
+  async test(args) {
+    const [lock] = selectLocks(args);
+    const { spawnSync } = require('child_process');
+
+    const attempts = [
+      { label: 'shared adapter, direct connect', userChannel: false, method: 'direct' },
+      { label: 'shared adapter, scan then connect', userChannel: false, method: 'scan' },
+      { label: 'exclusive adapter, direct connect', userChannel: true, method: 'direct' },
+      { label: 'exclusive adapter, scan then connect', userChannel: true, method: 'scan' },
+    ];
+
+    console.log(`Testing how to reach ${lock.name} (${lock.address || lock.peripheralId}).`);
+    console.log('Each attempt runs in its own process and gets up to 45s.\n');
+
+    let worked = null;
+    for (const attempt of attempts) {
+      process.stdout.write(`  ${attempt.label.padEnd(36)} `);
+
+      const child = spawnSync(
+        process.execPath,
+        [__filename, '_try', lock.name, `--${attempt.method}`],
+        {
+          encoding: 'utf8',
+          timeout: 45000,
+          env: {
+            ...process.env,
+            ...(attempt.userChannel ? { HCI_CHANNEL_USER: '1' } : { HCI_CHANNEL_USER: '' }),
+          },
+        }
+      );
+
+      const line = (child.stdout || '').trim().split('\n').filter(Boolean).pop();
+      let result = null;
+      try {
+        result = line ? JSON.parse(line) : null;
+      } catch {
+        result = null;
+      }
+
+      if (result && result.ok) {
+        console.log(`WORKS — lock reads ${result.state}`);
+        worked = attempt;
+        break;
+      }
+      const why = result ? result.error : child.error ? child.error.message : 'no result (timed out)';
+      console.log(`no — ${why}`);
+    }
+
+    console.log();
+    if (!worked) {
+      console.log('None of the four worked. `utec doctor` covers the environment;');
+      console.log('a USB Bluetooth dongle avoids the built-in radio entirely.');
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Use: ${worked.label}.`);
+    if (worked.userChannel) {
+      console.log('  Set "exclusiveAdapter": true in the plugin config, and keep');
+      console.log('  bluetoothd stopped with the adapter down.');
+    } else {
+      console.log('  No special configuration needed — this is the default.');
+    }
+  },
+
+  // One attempt, one route, machine-readable. Used by `test`.
+  async _try(args) {
+    const method = args.includes('--scan') ? 'scan' : 'direct';
+    const [lock] = selectLocks(args.filter((a) => !a.startsWith('--')));
+    const ble = require('./ble/lock');
+    const result = { method, userChannel: Boolean(process.env.HCI_CHANNEL_USER) };
+
+    try {
+      const { peripheral, connected } = await locksModule.reachLock(lock, { method });
+      result.reached = true;
+      const state = await ble.withSession(peripheral, lock, (s) => ble.readStatus(s), { connected });
+      result.ok = true;
+      result.state = state.state;
+    } catch (err) {
+      result.ok = false;
+      result.error = err.message.split('\n')[0];
+    }
+    process.stdout.write(`${JSON.stringify(result)}\n`);
   },
 
   async forget() {

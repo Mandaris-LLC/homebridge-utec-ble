@@ -74,20 +74,54 @@ function canonUuid(uuid) {
   return flat.replace(/^0+/, '') || '0';
 }
 
+// Each unusable adapter state has a different cause, and the wrong advice here
+// actively misleads — telling someone to power the adapter up is the opposite
+// of what exclusive mode needs.
+function adapterStateHint(state) {
+  if (process.platform !== 'linux') return '';
+
+  const exclusive = Boolean(process.env.HCI_CHANNEL_USER);
+
+  if (state === 'unsupported') {
+    // noble reports "unsupported" whenever its init throws, not only for a
+    // genuine lack of BLE. In exclusive mode the usual cause is a missing
+    // capability: binding the HCI user channel needs CAP_NET_ADMIN, which is
+    // a separate check from the CAP_NET_RAW an ordinary socket needs.
+    return exclusive
+      ? '\n\nExclusive mode could not initialise the adapter. Binding the HCI user\n' +
+          'channel needs CAP_NET_ADMIN as well as CAP_NET_RAW:\n' +
+          `  sudo setcap cap_net_raw,cap_net_admin+eip ${process.execPath}\n` +
+          'It also needs the kernel to have released the adapter:\n' +
+          '  sudo systemctl stop bluetooth && sudo hciconfig hci0 down'
+      : '\n\nnoble could not initialise the adapter. Check it exists (`hciconfig`)\n' +
+          'and that this process may use it:\n' +
+          `  sudo setcap cap_net_raw,cap_net_admin+eip ${process.execPath}`;
+  }
+
+  if (state === 'unauthorized') {
+    return (
+      '\n\nNo permission to use the Bluetooth adapter:\n' +
+      `  sudo setcap cap_net_raw,cap_net_admin+eip ${process.execPath}`
+    );
+  }
+
+  // poweredOff, and anything else.
+  return exclusive
+    ? '\n\nIn exclusive mode noble powers the adapter itself, so leave it down —\n' +
+        'do not run `hciconfig hci0 up`. Check bluetoothd is not holding it:\n' +
+        '  systemctl is-active bluetooth'
+    : '\n\nThe adapter is not powered on. bluetoothd normally does that:\n' +
+        '  sudo systemctl start bluetooth\n' +
+        'Or, if it was stopped deliberately:\n' +
+        '  sudo rfkill unblock bluetooth && sudo hciconfig hci0 up';
+}
+
 async function ensurePoweredOn(noble) {
   if (noble.state === 'poweredOn') return;
   await noble.waitForPoweredOnAsync(10000).catch(() => {
-    // On Linux, bluetoothd is what powers the adapter up. Stopping it to keep
-    // it from competing for the adapter also leaves the adapter off, so this
-    // state is the usual consequence of that fix rather than broken hardware.
-    const hint =
-      process.platform === 'linux'
-        ? '\n\nIf bluetoothd was stopped, the adapter needs powering up separately:\n' +
-          '  sudo rfkill unblock bluetooth && sudo hciconfig hci0 up\n' +
-          'That does not persist across reboots while bluetoothd is disabled — see\n' +
-          'the README for a unit that brings it up before Homebridge starts.'
-        : '';
-    throw new Error(`Bluetooth is not available (adapter state: ${noble.state}).${hint}`);
+    throw new Error(
+      `Bluetooth is not available (adapter state: ${noble.state}).${adapterStateHint(noble.state)}`
+    );
   });
 }
 

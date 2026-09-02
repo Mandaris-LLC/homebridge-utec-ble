@@ -139,12 +139,27 @@ function checkAdapter() {
   }
   const down = /\bDOWN\b/.test(out);
   const name = (out.match(/^(\w+):/m) || [, 'hci0'])[1];
+  const exclusive = process.env.HCI_CHANNEL_USER;
+
+  // In exclusive (user-channel) mode the kernel should NOT have the adapter up
+  // — noble powers it itself — so the expected state is inverted.
+  if (exclusive) {
+    return down
+      ? { status: OK, title: 'Bluetooth adapter', detail: `${name} is down, as exclusive mode needs` }
+      : {
+          status: WARN,
+          title: 'Bluetooth adapter',
+          detail: `${name} is up, but exclusive mode needs the kernel to release it`,
+          fix: `sudo systemctl stop bluetooth && sudo hciconfig ${name} down`,
+        };
+  }
+
   return down
     ? {
         status: BAD,
         title: 'Bluetooth adapter',
         detail: `${name} is DOWN`,
-        fix: `sudo hciconfig ${name} up`,
+        fix: `sudo hciconfig ${name} up  (or set HCI_CHANNEL_USER=1 for exclusive mode)`,
       }
     : { status: OK, title: 'Bluetooth adapter', detail: `${name} is up` };
 }
@@ -180,27 +195,43 @@ function checkNoble() {
 // itself; the systemd drop-in only grants it to the Homebridge service.
 function checkCapabilities() {
   if (os.platform() !== 'linux') {
-    return { status: OK, title: 'Raw socket capability', detail: 'not applicable on this platform' };
+    return { status: OK, title: 'Bluetooth capabilities', detail: 'not applicable on this platform' };
   }
   if (process.getuid && process.getuid() === 0) {
-    return { status: OK, title: 'Raw socket capability', detail: 'running as root' };
+    return { status: OK, title: 'Bluetooth capabilities', detail: 'running as root' };
   }
   if (!has('getcap')) {
-    return { status: OK, title: 'Raw socket capability', detail: 'getcap not installed; skipped' };
+    return { status: OK, title: 'Bluetooth capabilities', detail: 'getcap not installed; skipped' };
   }
 
   const out = run('getcap', [process.execPath]) || '';
-  if (/cap_net_raw/i.test(out)) {
-    return { status: OK, title: 'Raw socket capability', detail: out };
+  const hasRaw = /cap_net_raw/i.test(out);
+  // Exclusive (user-channel) mode binds the HCI user channel, which the kernel
+  // gates on CAP_NET_ADMIN — a separate check from CAP_NET_RAW. Without it,
+  // noble's init throws and it reports the adapter as "unsupported".
+  const hasAdmin = /cap_net_admin/i.test(out);
+  const exclusive = Boolean(process.env.HCI_CHANNEL_USER);
+  const fix =
+    'Needed to run this CLI by hand (the Homebridge service gets these from\n' +
+    '      its systemd drop-in instead):\n' +
+    `      sudo setcap cap_net_raw,cap_net_admin+eip ${process.execPath}`;
+
+  if (hasRaw && (hasAdmin || !exclusive)) {
+    return { status: OK, title: 'Bluetooth capabilities', detail: out || 'granted' };
+  }
+  if (hasRaw && !hasAdmin) {
+    return {
+      status: WARN,
+      title: 'Bluetooth capabilities',
+      detail: `${out} — exclusive mode also needs cap_net_admin`,
+      fix,
+    };
   }
   return {
     status: WARN,
-    title: 'Raw socket capability',
+    title: 'Bluetooth capabilities',
     detail: `${process.execPath} has no cap_net_raw`,
-    fix:
-      'Needed to run this CLI by hand (the Homebridge service gets it from its\n' +
-      '      systemd drop-in instead):\n' +
-      `      sudo setcap cap_net_raw+eip ${process.execPath}`,
+    fix,
   };
 }
 

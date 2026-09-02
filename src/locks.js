@@ -65,13 +65,16 @@ async function findLocks(locks, { timeoutMs } = {}) {
 // resolves — the call hangs. Connecting by address avoids that, and needs no
 // scan at all. Scanning stays the fallback, and is the only route where no
 // address is known, as on macOS.
-async function reachLock(lock, { debug } = {}) {
-  if (lock.address) {
+// `method` forces one route instead of trying both, which `utec test` uses to
+// tell the two apart.
+async function reachLock(lock, { debug, method = 'auto' } = {}) {
+  if (lock.address && method !== 'scan') {
     try {
       const peripheral = await connectByAddress(lock.address);
       debug?.(`connected directly to ${lock.address}`);
-      return { peripheral, connected: true };
+      return { peripheral, connected: true, method: 'direct' };
     } catch (err) {
+      if (method === 'direct') throw err;
       debug?.(`direct connect failed (${err.message}); scanning instead`);
     }
   }
@@ -79,7 +82,7 @@ async function reachLock(lock, { debug } = {}) {
   const found = await findLocks([lock]);
   const peripheral = found.get(lock.name);
   if (!peripheral) throw new Error(notFoundHint(lock));
-  return { peripheral, connected: false };
+  return { peripheral, connected: false, method: 'scan' };
 }
 
 // Why a lock might not have turned up, phrased for the platform in use.

@@ -38,6 +38,12 @@
         "minimum": 1,
         "maximum": 1440,
         "description": "State arrives by push, so this only catches anything missed. Each refresh wakes the lock and costs battery, so keep it infrequent."
+      },
+      "exclusiveAdapter": {
+        "title": "Take exclusive control of the Bluetooth adapter",
+        "type": "boolean",
+        "default": false,
+        "description": "Binds the HCI user channel, so the kernel's Bluetooth stack stops managing the adapter. Without this both stacks try to create LE connections and the kernel logs `Opcode 0x200e failed: -16` while connections never establish, even though scanning works. Requires the adapter down and bluetoothd stopped \u2014 see the README."
       }
     }
   },
@@ -50,6 +56,7 @@
       "expanded": false,
       "items": [
         "adapter",
+        "exclusiveAdapter",
         "refreshMinutes",
         {
           "key": "locks",

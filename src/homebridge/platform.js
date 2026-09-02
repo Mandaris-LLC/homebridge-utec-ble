@@ -25,15 +25,28 @@ class UtecPlatform {
     this.accessories = new Map();
     this.controllers = [];
 
-    // A Raspberry Pi's built-in radio shares its antenna with WiFi, and that
-    // contention shows up as connections that fail to establish (HCI 0x3E)
-    // while scanning still works. A USB dongle avoids it — this selects which
-    // adapter noble binds to. It must be set before noble is first required,
-    // which is why it happens here rather than at connect time.
+    // Both of these are read by noble when it is first required, so they have
+    // to be set here rather than at connect time.
     const adapter = this.config.adapter;
     if (Number.isInteger(adapter) && adapter >= 0 && process.platform === 'linux') {
       process.env.NOBLE_HCI_DEVICE_ID = String(adapter);
       this.log.info(`Using Bluetooth adapter hci${adapter}`);
+    }
+
+    // Exclusive (user-channel) mode. By default the kernel's own Bluetooth
+    // stack keeps managing the adapter while noble drives it over a raw HCI
+    // socket, and the two then both try to create LE connections — the kernel
+    // logs `Opcode 0x200e failed: -16` (LE Create Connection Cancel, EBUSY)
+    // and connections never establish, though scanning is unaffected. The user
+    // channel hands the adapter to noble alone, which requires the adapter to
+    // be down from the kernel's side and bluetoothd not to claim it back.
+    if (this.config.exclusiveAdapter && process.platform === 'linux') {
+      process.env.HCI_CHANNEL_USER = '1';
+      this.log.info(
+        'Taking exclusive control of the Bluetooth adapter. This needs the ' +
+          'adapter down (`sudo hciconfig hci0 down`) and bluetoothd stopped; ' +
+          'see the README.'
+      );
     }
 
     // Adapter resets invalidate every connection, so log them prominently.

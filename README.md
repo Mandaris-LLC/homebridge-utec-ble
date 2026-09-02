@@ -165,33 +165,64 @@ EOF
 sudo systemctl daemon-reload && sudo systemctl restart homebridge
 ```
 
-**The built-in radio may not be good enough.** On a Pi 3/4 the Bluetooth and
-WiFi radios share one antenna. Scanning tolerates the contention, but
-*establishing* a connection often does not, and the symptom is a link that comes
-up and immediately fails with HCI `0x3E` — "connection failed to be
-established" — before the key exchange starts. Locks that connect fine from
-another machine a similar distance away point straight at this.
+**Two Bluetooth stacks cannot share one adapter.** By default noble drives the
+adapter over a raw HCI socket while the kernel's own stack carries on managing
+it. Both then try to create LE connections, and the kernel starts logging
 
-A USB Bluetooth dongle avoids the shared antenna. Find its index with
-`hciconfig`, then set it in the plugin config:
-
-```json
-{ "platform": "UtecBLE", "adapter": 1 }
+```
+Bluetooth: hci0: Opcode 0x200e failed: -16
 ```
 
-Leaving `adapter` unset uses the default. To test the theory before buying
-anything, put the Pi on Ethernet and take WiFi down — if connections start
-working, it is coexistence.
+— `LE Create Connection Cancel` returning `EBUSY`. Scanning is passive and
+survives this; *connecting* does not. Connections either never establish (HCI
+`0x3E`), or noble loses track of the peripheral and the connect call hangs
+outright with `unknown peripheral <id>`.
 
-`bluetoothd` is usually best left running: it configures the adapter (LE
-parameters, connection defaults) that noble then uses. Stopping it leaves the
-adapter powered off, since that is what brings it up, and a bare
-`hciconfig hci0 up` is not equivalent.
+The fix is to give noble the adapter exclusively, via the HCI **user channel**:
+
+```json
+{ "platform": "UtecBLE", "exclusiveAdapter": true }
+```
+
+That mode needs the kernel to let go of the adapter, so bluetoothd must not be
+holding it:
+
+```sh
+sudo systemctl stop bluetooth
+sudo systemctl disable bluetooth     # or it takes the adapter back on boot
+sudo hciconfig hci0 down             # noble powers it up itself
+```
+
+`hciconfig` will then report the adapter DOWN while the plugin is using it —
+that is correct, and `utec doctor` accounts for it when `HCI_CHANNEL_USER` is
+set. The whole adapter belongs to this plugin, so nothing else on the host can
+use Bluetooth.
+
+To try it from the CLI first: `HCI_CHANNEL_USER=1 utec status`.
+
+If connections are merely unreliable rather than impossible, the cause is more
+likely radio contention — on a Pi 3/4 the Bluetooth and WiFi radios share an
+antenna. A USB dongle avoids it; select it with `"adapter": 1` (find the index
+with `hciconfig`).
 
 `utec doctor` reports on all of this, and needs no adapter, so it is safe to run
 while Homebridge holds it.
 
-To run the CLI by hand, `sudo setcap cap_net_raw+eip "$(readlink -f "$(which node)")"`.
+To run the CLI by hand, grant the same capabilities to the node binary itself —
+the systemd drop-in only covers the service:
+
+```sh
+sudo setcap cap_net_raw,cap_net_admin+eip /opt/homebridge/bin/node
+```
+
+`CAP_NET_RAW` is enough for scanning and ordinary connections; exclusive mode
+additionally needs `CAP_NET_ADMIN`, which the kernel checks separately when
+binding the HCI user channel. Without it noble's init throws and it reports the
+adapter as `unsupported`, which is its label for any init failure rather than a
+real lack of BLE.
+
+Note that `setcap` applies to that exact binary, so a Homebridge update which
+replaces its bundled Node silently drops it. `utec doctor` checks for both.
 noble's bindings are native, so install with the same npm as the Node that will
 load them — `/opt/homebridge/bin/npm` on a packaged Homebridge — or expect
 `NODE_MODULE_VERSION` errors. `libudev-dev` is required to build them.
