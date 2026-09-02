@@ -61,21 +61,24 @@ class LockSession extends EventEmitter {
     };
   }
 
-  async connect() {
-    // noble hands back the same peripheral object every scan, so it can arrive
-    // still holding state from a previous attempt. Connecting on top of that
-    // gives a link that reports up and then immediately fails, so settle it
-    // first.
-    const before = this.peripheral.state;
-    if (before && before !== 'disconnected') {
-      this.debug(`peripheral was "${before}"; settling it first`);
-      await this.peripheral.disconnectAsync().catch(() => {});
-      await new Promise((r) => setTimeout(r, 250));
+  // `connected` means the caller already established the link — a direct
+  // connect by address does that, and connecting again would be wrong.
+  async connect({ connected = false } = {}) {
+    if (!connected) {
+      // noble hands back the same peripheral object every scan, so it can
+      // arrive still holding state from a previous attempt. Connecting on top
+      // of that gives a link that reports up then immediately fails.
+      const before = this.peripheral.state;
+      if (before && before !== 'disconnected') {
+        this.debug(`peripheral was "${before}"; settling it first`);
+        await this.peripheral.disconnectAsync().catch(() => {});
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      await this.peripheral.connectAsync();
     }
 
-    await this.peripheral.connectAsync();
     this.peripheral.once('disconnect', this._onDisconnect);
-    this.debug(`link up to ${this.peripheral.id} (was "${before || 'unknown'}")`);
+    this.debug(`link up to ${this.peripheral.id}${connected ? ' (direct)' : ''}`);
 
     // Setup steps wait on the lock answering, and each has its own timeout. If
     // the link dies underneath them they would otherwise sit out that full

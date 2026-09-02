@@ -17,7 +17,7 @@ const { EventEmitter } = require('events');
 const ble = require('./ble/lock');
 const locks = require('./locks');
 const { withAdapter } = require('./ble/adapter');
-const { explainHciError } = require('./ble/probe');
+const { explainHciError, connectByAddress } = require('./ble/probe');
 
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 60000;
@@ -119,6 +119,30 @@ class LockController extends EventEmitter {
     }
   }
 
+  // Prefer connecting straight to the known address: it needs no scan, so it
+  // avoids the adapter's scan/connect mode switching and the Linux binding's
+  // habit of losing track of a scanned peripheral ("unknown peripheral <id>",
+  // after which the connect never resolves). Scanning stays as the fallback,
+  // and is the only option where no address is known — macOS hides them.
+  async _reach() {
+    const address = this.credential.address;
+
+    if (address) {
+      try {
+        const peripheral = await connectByAddress(address);
+        this.log.debug?.(`${this.name}: connected directly to ${address}`);
+        return { peripheral, connected: true };
+      } catch (err) {
+        this.log.debug?.(`${this.name}: direct connect failed (${err.message}); scanning instead`);
+      }
+    }
+
+    const found = await locks.findLocks([this.credential], { timeoutMs: SCAN_TIMEOUT_MS });
+    const peripheral = found.get(this.name);
+    if (!peripheral) throw new Error(locks.notFoundHint(this.credential));
+    return { peripheral, connected: false };
+  }
+
   async _establish() {
     // Checked at each step so a shutdown mid-connect abandons the attempt and
     // closes whatever it opened, rather than leaving a link on the adapter.
@@ -131,11 +155,8 @@ class LockController extends EventEmitter {
 
     if (await abandoned()) return;
 
-    const found = await locks.findLocks([this.credential], { timeoutMs: SCAN_TIMEOUT_MS });
+    const { peripheral, connected } = await this._reach();
     if (await abandoned()) return;
-
-    const peripheral = found.get(this.name);
-    if (!peripheral) throw new Error(locks.notFoundHint(this.credential));
 
     const session = new ble.LockSession(peripheral, this.credential, {
       debug: (msg) => this.log.debug?.(`${this.name}: ${msg}`),
@@ -164,7 +185,7 @@ class LockController extends EventEmitter {
     this._establishing = session;
 
     try {
-      await session.connect();
+      await session.connect({ connected });
       // Stamped the moment the link exists, so a drop during login still
       // reports how long it survived.
       this._connectedAt = Date.now();

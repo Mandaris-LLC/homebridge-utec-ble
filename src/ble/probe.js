@@ -235,6 +235,36 @@ async function scanAll({ timeoutMs = 15000 } = {}) {
     .sort((a, b) => b.rssi - a.rssi);
 }
 
+// Connect straight to a known address, no scan involved.
+//
+// Scanning and then connecting to the discovered object is fragile on the Linux
+// binding: the peripheral can be missing from noble's own registry by the time
+// the connection completes, and it then warns "unknown peripheral <id>" and
+// never resolves the connect — it hangs. Connecting by address registers the
+// peripheral properly, and skips the scan entirely, which also spares the
+// adapter the scan/connect mode switching.
+async function connectByAddress(address, { timeoutMs = 20000 } = {}) {
+  const noble = loadNoble();
+  await ensurePoweredOn(noble);
+
+  let timer;
+  try {
+    return await Promise.race([
+      noble.connectAsync(address),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Direct connect to ${address} timed out.`)),
+          timeoutMs
+        );
+      }),
+    ]);
+  } catch (err) {
+    throw explainHciError(explainAdapterError(err));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Scan and hand back live peripheral objects, ready to connect.
 async function findPeripherals({ ids = [], timeoutMs = 20000 } = {}) {
   const noble = loadNoble();
@@ -247,6 +277,6 @@ async function findPeripherals({ ids = [], timeoutMs = 20000 } = {}) {
 
 module.exports = {
   probe, scanAll, findPeripherals, identifiersOf, normalize,
-  explainAdapterError, explainHciError,
+  explainAdapterError, explainHciError, connectByAddress,
   KEY_KINDS, SERVICE_LOCK, canonUuid,
 };
