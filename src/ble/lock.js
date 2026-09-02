@@ -222,10 +222,10 @@ class LockSession extends EventEmitter {
 }
 
 // One-shot use: open, log in, do the work, hang up.
-async function withSession(peripheral, credential, fn) {
+async function withSession(peripheral, credential, fn, { connected = false } = {}) {
   const session = new LockSession(peripheral, credential);
   try {
-    await session.connect();
+    await session.connect({ connected });
     await session.login();
     return await fn(session);
   } finally {

@@ -69,8 +69,14 @@ function selectLocks(args, { single = false } = {}) {
   return chosen;
 }
 
-const connectTo = (locks) => locksModule.findLocks(locks);
 const notFoundHint = (lock) => `${locksModule.notFoundHint(lock)}.`;
+
+// Reach a lock and run `fn` over an open session, however it had to connect.
+async function onLock(lock, fn) {
+  const debug = process.env.UTEC_DEBUG ? (m) => console.error(`[utec] ${lock.name}: ${m}`) : undefined;
+  const { peripheral, connected } = await locksModule.reachLock(lock, { debug });
+  return require('./ble/lock').withSession(peripheral, lock, fn, { connected });
+}
 
 function describeState(state) {
   if (!state) return 'state unavailable';
@@ -83,18 +89,18 @@ function describeState(state) {
 async function boltAction(args, locked) {
   const chosen = selectLocks(args, { single: true });
   const ble = require('./ble/lock');
-  const byLock = await connectTo(chosen);
 
   for (const lock of chosen) {
-    const peripheral = byLock.get(lock.name);
-    if (!peripheral) {
-      console.log(`${lock.name}: ${notFoundHint(lock)}`);
+    process.stdout.write(`${locked ? 'Locking' : 'Unlocking'} ${lock.name}... `);
+
+    let result;
+    try {
+      result = await onLock(lock, (s) => ble.setBolt(s, locked));
+    } catch (err) {
+      console.log(`could not reach it: ${err.message}`);
       process.exitCode = 1;
       continue;
     }
-
-    process.stdout.write(`${locked ? 'Locking' : 'Unlocking'} ${lock.name}... `);
-    const result = await ble.withSession(peripheral, lock, (s) => ble.setBolt(s, locked));
 
     const expected = locked ? 'Locked' : 'Unlocked';
     if (result.state && result.state.state === expected) {
@@ -265,16 +271,15 @@ const commands = {
   async status(args) {
     const chosen = selectLocks(args);
     const ble = require('./ble/lock');
-    const byLock = await connectTo(chosen);
 
     for (const lock of chosen) {
-      const peripheral = byLock.get(lock.name);
-      if (!peripheral) {
-        console.log(`${lock.name}: ${notFoundHint(lock)}`);
-        continue;
+      try {
+        const state = await onLock(lock, (s) => ble.readStatus(s));
+        console.log(`${lock.name}: ${describeState(state)}`);
+      } catch (err) {
+        console.log(`${lock.name}: ${err.message}`);
+        process.exitCode = 1;
       }
-      const state = await ble.withSession(peripheral, lock, (s) => ble.readStatus(s));
-      console.log(`${lock.name}: ${describeState(state)}`);
     }
   },
 
@@ -283,16 +288,17 @@ const commands = {
   async dump(args) {
     const chosen = selectLocks(args);
     const ble = require('./ble/lock');
-    const byLock = await connectTo(chosen);
 
     for (const lock of chosen) {
-      const peripheral = byLock.get(lock.name);
-      if (!peripheral) {
-        console.log(`${lock.name}: ${notFoundHint(lock)}\n`);
+      console.log(`${lock.name}  [${lock.model}]  uid=${lock.uid}`);
+      let frames;
+      try {
+        frames = await onLock(lock, (s) => ble.dumpReads(s));
+      } catch (err) {
+        console.log(`  could not reach it: ${err.message}\n`);
+        process.exitCode = 1;
         continue;
       }
-      console.log(`${lock.name}  [${lock.model}]  uid=${lock.uid}`);
-      const frames = await ble.withSession(peripheral, lock, (s) => ble.dumpReads(s));
       for (const f of frames) {
         console.log(`  ${f.command.padEnd(16)} ${f.error ? `ERROR ${f.error}` : ''}`);
         if (f.error) continue;

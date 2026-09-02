@@ -17,7 +17,7 @@ const { EventEmitter } = require('events');
 const ble = require('./ble/lock');
 const locks = require('./locks');
 const { withAdapter } = require('./ble/adapter');
-const { explainHciError, connectByAddress } = require('./ble/probe');
+const { explainHciError } = require('./ble/probe');
 
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 60000;
@@ -124,23 +124,10 @@ class LockController extends EventEmitter {
   // habit of losing track of a scanned peripheral ("unknown peripheral <id>",
   // after which the connect never resolves). Scanning stays as the fallback,
   // and is the only option where no address is known — macOS hides them.
-  async _reach() {
-    const address = this.credential.address;
-
-    if (address) {
-      try {
-        const peripheral = await connectByAddress(address);
-        this.log.debug?.(`${this.name}: connected directly to ${address}`);
-        return { peripheral, connected: true };
-      } catch (err) {
-        this.log.debug?.(`${this.name}: direct connect failed (${err.message}); scanning instead`);
-      }
-    }
-
-    const found = await locks.findLocks([this.credential], { timeoutMs: SCAN_TIMEOUT_MS });
-    const peripheral = found.get(this.name);
-    if (!peripheral) throw new Error(locks.notFoundHint(this.credential));
-    return { peripheral, connected: false };
+  _reach() {
+    return locks.reachLock(this.credential, {
+      debug: (msg) => this.log.debug?.(`${this.name}: ${msg}`),
+    });
   }
 
   async _establish() {

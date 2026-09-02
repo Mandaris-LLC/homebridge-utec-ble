@@ -4,7 +4,7 @@
 // the Homebridge platform build on this.
 
 const config = require('./config');
-const { findPeripherals, identifiersOf, normalize } = require('./ble/probe');
+const { findPeripherals, identifiersOf, normalize, connectByAddress } = require('./ble/probe');
 
 // A lock is recognised by its MAC (Linux reports it, and uses it as the
 // peripheral id) or by the peripheral id `pair` recorded — needed on macOS,
@@ -57,6 +57,31 @@ async function findLocks(locks, { timeoutMs } = {}) {
   return found;
 }
 
+// Reach one lock, preferring a direct connect to its known address.
+//
+// Scanning and then connecting to the discovered object is fragile on noble's
+// Linux binding: the peripheral can be absent from noble's registry by the time
+// the connection completes, and it warns "unknown peripheral <id>" and never
+// resolves — the call hangs. Connecting by address avoids that, and needs no
+// scan at all. Scanning stays the fallback, and is the only route where no
+// address is known, as on macOS.
+async function reachLock(lock, { debug } = {}) {
+  if (lock.address) {
+    try {
+      const peripheral = await connectByAddress(lock.address);
+      debug?.(`connected directly to ${lock.address}`);
+      return { peripheral, connected: true };
+    } catch (err) {
+      debug?.(`direct connect failed (${err.message}); scanning instead`);
+    }
+  }
+
+  const found = await findLocks([lock]);
+  const peripheral = found.get(lock.name);
+  if (!peripheral) throw new Error(notFoundHint(lock));
+  return { peripheral, connected: false };
+}
+
 // Why a lock might not have turned up, phrased for the platform in use.
 function notFoundHint(lock) {
   return lock.peripheralId
@@ -66,5 +91,5 @@ function notFoundHint(lock) {
 }
 
 module.exports = {
-  loadLocks, selectLocks, findLocks, matches, identifiersFor, notFoundHint,
+  loadLocks, selectLocks, findLocks, reachLock, matches, identifiersFor, notFoundHint,
 };
