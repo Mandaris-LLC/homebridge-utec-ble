@@ -173,10 +173,39 @@ function checkNoble() {
   }
 }
 
+// Running the CLI by hand needs raw-socket capability on the node binary
+// itself; the systemd drop-in only grants it to the Homebridge service.
+function checkCapabilities() {
+  if (os.platform() !== 'linux') {
+    return { status: OK, title: 'Raw socket capability', detail: 'not applicable on this platform' };
+  }
+  if (process.getuid && process.getuid() === 0) {
+    return { status: OK, title: 'Raw socket capability', detail: 'running as root' };
+  }
+  if (!has('getcap')) {
+    return { status: OK, title: 'Raw socket capability', detail: 'getcap not installed; skipped' };
+  }
+
+  const out = run('getcap', [process.execPath]) || '';
+  if (/cap_net_raw/i.test(out)) {
+    return { status: OK, title: 'Raw socket capability', detail: out };
+  }
+  return {
+    status: WARN,
+    title: 'Raw socket capability',
+    detail: `${process.execPath} has no cap_net_raw`,
+    fix:
+      'Needed to run this CLI by hand (the Homebridge service gets it from its\n' +
+      '      systemd drop-in instead):\n' +
+      `      sudo setcap cap_net_raw+eip ${process.execPath}`,
+  };
+}
+
 function diagnose() {
   return [
     checkKeys(),
     checkAdapter(),
+    checkCapabilities(),
     checkNoble(),
     checkBluetoothd(),
     checkStaleLinks(),

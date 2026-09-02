@@ -71,11 +71,44 @@ function selectLocks(args, { single = false } = {}) {
 
 const notFoundHint = (lock) => `${locksModule.notFoundHint(lock)}.`;
 
+// A whole attempt — direct connect, fallback scan, handshake — should never
+// take longer than this. Bluetooth calls can hang rather than fail, and a
+// command that sits there silently is worse than one that gives up and says so.
+const LOCK_BUDGET_MS = 60000;
+
+function withDeadline(promise, ms, what) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)),
+        ms
+      );
+    }),
+  ]);
+}
+
 // Reach a lock and run `fn` over an open session, however it had to connect.
 async function onLock(lock, fn) {
-  const debug = process.env.UTEC_DEBUG ? (m) => console.error(`[utec] ${lock.name}: ${m}`) : undefined;
-  const { peripheral, connected } = await locksModule.reachLock(lock, { debug });
-  return require('./ble/lock').withSession(peripheral, lock, fn, { connected });
+  // Progress goes to stderr so it never pollutes piped output, and is on by
+  // default: this can take tens of seconds and silence looks like a hang.
+  const note = (m) => console.error(`  ${lock.name}: ${m}`);
+  const ble = require('./ble/lock');
+
+  note('connecting...');
+  const { peripheral, connected } = await withDeadline(
+    locksModule.reachLock(lock, { debug: note }),
+    LOCK_BUDGET_MS,
+    'connect'
+  );
+
+  note(connected ? 'connected, opening session...' : 'found, connecting...');
+  return withDeadline(
+    ble.withSession(peripheral, lock, fn, { connected }),
+    LOCK_BUDGET_MS,
+    'session'
+  );
 }
 
 function describeState(state) {
