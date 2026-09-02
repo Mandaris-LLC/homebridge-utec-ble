@@ -236,10 +236,8 @@ const commands = {
     const { spawnSync } = require('child_process');
 
     const attempts = [
-      { label: 'shared adapter, direct connect', userChannel: false, method: 'direct' },
-      { label: 'shared adapter, scan then connect', userChannel: false, method: 'scan' },
-      { label: 'exclusive adapter, direct connect', userChannel: true, method: 'direct' },
-      { label: 'exclusive adapter, scan then connect', userChannel: true, method: 'scan' },
+      { label: 'shared adapter', userChannel: false },
+      { label: 'exclusive adapter (user channel)', userChannel: true },
     ];
 
     console.log(`Testing how to reach ${lock.name} (${lock.address || lock.peripheralId}).`);
@@ -253,7 +251,7 @@ const commands = {
 
       const child = spawnSync(
         process.execPath,
-        [__filename, '_try', lock.name, `--${attempt.method}`],
+        [__filename, '_try', lock.name],
         {
           encoding: 'utf8',
           timeout: 45000,
@@ -302,13 +300,12 @@ const commands = {
 
   // One attempt, one route, machine-readable. Used by `test`.
   async _try(args) {
-    const method = args.includes('--scan') ? 'scan' : 'direct';
     const [lock] = selectLocks(args.filter((a) => !a.startsWith('--')));
     const ble = require('./ble/lock');
-    const result = { method, userChannel: Boolean(process.env.HCI_CHANNEL_USER) };
+    const result = { userChannel: Boolean(process.env.HCI_CHANNEL_USER) };
 
     try {
-      const { peripheral, connected } = await locksModule.reachLock(lock, { method });
+      const { peripheral, connected } = await locksModule.reachLock(lock);
       result.reached = true;
       const state = await ble.withSession(peripheral, lock, (s) => ble.readStatus(s), { connected });
       result.ok = true;

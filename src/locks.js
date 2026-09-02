@@ -4,7 +4,7 @@
 // the Homebridge platform build on this.
 
 const config = require('./config');
-const { findPeripherals, identifiersOf, normalize, connectByAddress } = require('./ble/probe');
+const { findPeripherals, identifiersOf, normalize } = require('./ble/probe');
 
 // A lock is recognised by its MAC (Linux reports it, and uses it as the
 // peripheral id) or by the peripheral id `pair` recorded — needed on macOS,
@@ -65,23 +65,25 @@ async function findLocks(locks, { timeoutMs } = {}) {
 // resolves — the call hangs. Connecting by address avoids that, and needs no
 // scan at all. Scanning stays the fallback, and is the only route where no
 // address is known, as on macOS.
-// `method` forces one route instead of trying both, which `utec test` uses to
-// tell the two apart.
-async function reachLock(lock, { debug, method = 'auto' } = {}) {
-  if (lock.address && method !== 'scan') {
-    try {
-      const peripheral = await connectByAddress(lock.address);
-      debug?.(`connected directly to ${lock.address}`);
-      return { peripheral, connected: true, method: 'direct' };
-    } catch (err) {
-      if (method === 'direct') throw err;
-      debug?.(`direct connect failed (${err.message}); scanning instead`);
-    }
-  }
-
+// Always discover before connecting.
+//
+// noble also offers `connectAsync(address)`, which looks like it should skip
+// the scan — but it does not register a peripheral for an address it has never
+// seen. The controller then connects (in a fraction of a second), noble's
+// `_onConnect` cannot find the peripheral, and it warns "unknown peripheral
+// <id> connected!" and never resolves the promise. The call hangs *and* leaves
+// an established connection nobody is tracking. These locks accept a single
+// connection, so that zombie link occupies the only slot and every later
+// attempt fails — each timeout making the next one worse.
+//
+// Scanning first puts the peripheral in noble's registry, so the connect
+// completes and is owned by something that can close it.
+async function reachLock(lock, { debug } = {}) {
   const found = await findLocks([lock]);
   const peripheral = found.get(lock.name);
   if (!peripheral) throw new Error(notFoundHint(lock));
+
+  debug?.(`found at ${peripheral.rssi} dBm, connecting`);
   return { peripheral, connected: false, method: 'scan' };
 }
 

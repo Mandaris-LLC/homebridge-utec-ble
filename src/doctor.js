@@ -109,16 +109,27 @@ function checkProcesses() {
       fix: 'sudo systemctl restart homebridge, then re-check; kill survivors by pid.',
     };
   }
-  // Child bridges are not reliably identifiable from their command line, so
-  // report the count without claiming to have classified them.
-  return {
-    status: OK,
-    title: 'Homebridge processes',
-    detail:
-      `${lines.length} process(es)` +
-      (children.length ? `, ${children.length} identifiable as child bridges` : '') +
-      (lines.length > 2 ? ' — expected if other plugins also run as child bridges' : ''),
-  };
+
+  // Homebridge running this plugin holds a raw HCI socket and retries
+  // connections on a timer. The kernel then refuses anyone else's connect —
+  // BlueZ reports "Busy" (mgmt status 0x0a) and noble's calls hang or fail with
+  // 0x0C / 0x02 / 0x3E. Any CLI test taken while it runs measures the
+  // contention, not the lock, so say so before that wastes an afternoon.
+  if (lines.length) {
+    return {
+      status: WARN,
+      title: 'Homebridge processes',
+      detail:
+        `${lines.length} running — it holds the Bluetooth adapter, so CLI tests ` +
+        'will contend with it and fail misleadingly',
+      fix:
+        'Before testing from the CLI:\n' +
+        '      sudo systemctl stop homebridge && pgrep -af homebridge\n' +
+        '      (the second command should print nothing)',
+    };
+  }
+
+  return { status: OK, title: 'Homebridge processes', detail: 'none running' };
 }
 
 function checkAdapter() {

@@ -144,20 +144,21 @@ async function ensurePoweredOn(noble) {
 // The adapter takes one owner at a time. When something else holds it, the
 // HCI layer rejects our commands with codes that say nothing useful on their
 // own — so explain the situation rather than passing the code through.
-const CONTENTION = /command disallowed|0xc\b|0x0c|busy|EPERM|not permitted|already/i;
+const CONTENTION = /command disallowed|0xc\b|0x0c|0x0a|busy|EPERM|not permitted|already/i;
 
 function explainAdapterError(err) {
   if (!CONTENTION.test(err.message)) return err;
 
   return new Error(
     `${err.message}\n\n` +
-      'The Bluetooth adapter rejected the command, which usually means another\n' +
-      'process already owns it. One adapter serves one client at a time:\n' +
-      '  - Homebridge running this plugin holds it. Stop it while using the CLI:\n' +
-      '      sudo systemctl stop homebridge\n' +
+      'The Bluetooth adapter rejected the command, which means another process\n' +
+      'owns it. Only one client can drive an adapter at a time:\n' +
+      '  - Homebridge running this plugin keeps a raw HCI socket open and retries\n' +
+      '    on a timer, which blocks everyone else. Stop it before testing:\n' +
+      '      sudo systemctl stop homebridge && pgrep -af homebridge\n' +
+      '  - Confirm nothing else holds it: sudo btmon  (look for "RAW Open")\n' +
       '  - Or the adapter is stuck with scanning left enabled:\n' +
-      '      sudo hciconfig hci0 down && sudo hciconfig hci0 up\n' +
-      '  - bluetoothd can also interfere: systemctl is-active bluetooth'
+      '      sudo hciconfig hci0 down && sudo hciconfig hci0 up'
   );
 }
 
@@ -315,35 +316,14 @@ async function scanAll({ timeoutMs = 15000 } = {}) {
     .sort((a, b) => b.rssi - a.rssi);
 }
 
-// Connect straight to a known address, no scan involved.
+// Deliberately no connect-by-address helper here.
 //
-// Scanning and then connecting to the discovered object is fragile on the Linux
-// binding: the peripheral can be missing from noble's own registry by the time
-// the connection completes, and it then warns "unknown peripheral <id>" and
-// never resolves the connect — it hangs. Connecting by address registers the
-// peripheral properly, and skips the scan entirely, which also spares the
-// adapter the scan/connect mode switching.
-async function connectByAddress(address, { timeoutMs = 20000 } = {}) {
-  const noble = loadNoble();
-  await ensurePoweredOn(noble);
-
-  let timer;
-  try {
-    return await Promise.race([
-      noble.connectAsync(address),
-      new Promise((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`Direct connect to ${address} timed out.`)),
-          timeoutMs
-        );
-      }),
-    ]);
-  } catch (err) {
-    throw explainHciError(explainAdapterError(err));
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// noble's `connectAsync(address)` does not register a peripheral for an address
+// it has not discovered. The controller connects anyway, noble's `_onConnect`
+// finds nothing in its registry, warns "unknown peripheral <id> connected!",
+// and never resolves — so the caller hangs while an untracked connection stays
+// open. On a lock that permits one connection at a time, that leaked link
+// blocks every subsequent attempt. Discover first; see locks.reachLock.
 
 // Scan and hand back live peripheral objects, ready to connect.
 async function findPeripherals({ ids = [], timeoutMs = 20000 } = {}) {
@@ -357,6 +337,6 @@ async function findPeripherals({ ids = [], timeoutMs = 20000 } = {}) {
 
 module.exports = {
   probe, scanAll, findPeripherals, identifiersOf, normalize,
-  explainAdapterError, explainHciError, connectByAddress, setAdapterLogger,
+  explainAdapterError, explainHciError, setAdapterLogger,
   KEY_KINDS, SERVICE_LOCK, canonUuid,
 };
