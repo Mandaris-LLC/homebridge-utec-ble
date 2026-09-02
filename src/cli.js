@@ -243,6 +243,8 @@ const commands = {
     ];
 
     console.log(`Testing how to reach ${lock.name} (${lock.address || lock.peripheralId}).`);
+    console.log(`  node:  ${process.execPath}`);
+    console.log(`  keys:  ${config.CONFIG_FILE}`);
     console.log('Each attempt runs in its own process and gets up to 45s.\n');
 
     let worked = null;
@@ -281,8 +283,10 @@ const commands = {
 
     console.log();
     if (!worked) {
-      console.log('None of the four worked. `utec doctor` covers the environment;');
-      console.log('a USB Bluetooth dongle avoids the built-in radio entirely.');
+      console.log('None of the four worked. Run `utec doctor` with this same node');
+      console.log('binary — it reports whether that binary has the Bluetooth');
+      console.log('capabilities, which are granted per binary, not per user.');
+      console.log('If the environment checks out, a USB dongle avoids the built-in radio.');
       process.exitCode = 1;
       return;
     }

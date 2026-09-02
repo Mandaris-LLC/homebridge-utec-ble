@@ -105,6 +105,22 @@ function adapterStateHint(state) {
     );
   }
 
+  // "unknown" is noble's starting state: it never got as far as reporting
+  // whether the adapter works. Almost always the HCI socket could not be
+  // opened, and capabilities are granted per binary — so name the one in use,
+  // since running a different node than the one that was granted them is the
+  // usual cause.
+  if (state === 'unknown') {
+    return (
+      '\n\nnoble never initialised the adapter, which usually means it could not\n' +
+      'open the HCI socket. Capabilities are granted per binary, and this run is\n' +
+      `using:\n  ${process.execPath}\n\n` +
+      'Grant them to that exact binary:\n' +
+      `  sudo setcap cap_net_raw,cap_net_admin+eip ${process.execPath}\n` +
+      'Check with: getcap "$(which node)"'
+    );
+  }
+
   // poweredOff, and anything else.
   return exclusive
     ? '\n\nIn exclusive mode noble powers the adapter itself, so leave it down —\n' +
