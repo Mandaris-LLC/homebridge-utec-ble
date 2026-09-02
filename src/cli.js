@@ -21,7 +21,7 @@ Diagnostics:
   utec scan [seconds]      List every nearby Bluetooth device
   utec probe               Find the locks and report their key exchange
   utec dump [lock]         Print raw decrypted response frames (read-only)
-  utec forget              Discard the cached Bluetooth keys
+  utec doctor              Check the environment (safe while Homebridge runs)\n  utec forget              Discard the cached Bluetooth keys
 
 [lock] is a lock name, or any part of one. Omit it when you have one lock.
 Set UTEC_DEBUG=1 to trace every command and response frame.
@@ -157,6 +157,32 @@ const commands = {
       console.log(`  ${lock.name}  [${lock.model}]  ${lock.address}`);
     }
     console.log(`\nStored in ${config.CONFIG_FILE}. Next: utec pair`);
+  },
+
+  // Checks the environment rather than the locks: this needs no adapter, so it
+  // is safe to run while Homebridge is holding it.
+  async doctor() {
+    const { diagnose, OK, WARN, BAD } = require('./doctor');
+    const results = diagnose();
+    const mark = { [OK]: ' ok ', [WARN]: 'warn', [BAD]: 'FAIL' };
+
+    for (const r of results) {
+      console.log(`[${mark[r.status]}] ${r.title}`);
+      console.log(`      ${r.detail}`);
+      if (r.fix) console.log(`      -> ${r.fix}`);
+      console.log();
+    }
+
+    const bad = results.filter((r) => r.status !== OK);
+    if (!bad.length) {
+      console.log('Nothing obviously wrong with the environment.');
+      console.log('If locks still will not connect, try a lock-side reset: pull a');
+      console.log('battery for ten seconds. These locks accept one connection, and');
+      console.log('an unclean disconnect can leave them holding a dead session.');
+      return;
+    }
+    console.log(`${bad.length} thing(s) to look at, listed above.`);
+    process.exitCode = 1;
   },
 
   async forget() {
