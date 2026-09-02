@@ -47,7 +47,17 @@ function canonUuid(uuid) {
 async function ensurePoweredOn(noble) {
   if (noble.state === 'poweredOn') return;
   await noble.waitForPoweredOnAsync(10000).catch(() => {
-    throw new Error(`Bluetooth is not available (adapter state: ${noble.state}).`);
+    // On Linux, bluetoothd is what powers the adapter up. Stopping it to keep
+    // it from competing for the adapter also leaves the adapter off, so this
+    // state is the usual consequence of that fix rather than broken hardware.
+    const hint =
+      process.platform === 'linux'
+        ? '\n\nIf bluetoothd was stopped, the adapter needs powering up separately:\n' +
+          '  sudo rfkill unblock bluetooth && sudo hciconfig hci0 up\n' +
+          'That does not persist across reboots while bluetoothd is disabled — see\n' +
+          'the README for a unit that brings it up before Homebridge starts.'
+        : '';
+    throw new Error(`Bluetooth is not available (adapter state: ${noble.state}).${hint}`);
   });
 }
 

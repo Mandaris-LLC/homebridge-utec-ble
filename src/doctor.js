@@ -106,10 +106,15 @@ function checkProcesses() {
       fix: 'sudo systemctl restart homebridge, then re-check; kill survivors by pid.',
     };
   }
+  // Child bridges are not reliably identifiable from their command line, so
+  // report the count without claiming to have classified them.
   return {
     status: OK,
     title: 'Homebridge processes',
-    detail: `${lines.length} homebridge process(es), ${children.length} child bridge(s)`,
+    detail:
+      `${lines.length} process(es)` +
+      (children.length ? `, ${children.length} identifiable as child bridges` : '') +
+      (lines.length > 2 ? ' — expected if other plugins also run as child bridges' : ''),
   };
 }
 
