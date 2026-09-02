@@ -17,6 +17,7 @@ const { EventEmitter } = require('events');
 const ble = require('./ble/lock');
 const locks = require('./locks');
 const { withAdapter } = require('./ble/adapter');
+const { explainHciError } = require('./ble/probe');
 
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 60000;
@@ -219,9 +220,10 @@ class LockController extends EventEmitter {
 
   // Exponential backoff, capped — a lock that is asleep or out of range should
   // not be hammered, and each attempt costs its battery.
-  _scheduleReconnect(err) {
+  _scheduleReconnect(rawError) {
     if (this._stopped || this._reconnectTimer) return;
 
+    const err = explainHciError(rawError);
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this._attempt, RECONNECT_MAX_MS);
     this._attempt += 1;
     this.log.debug?.(`${this.name}: ${err.message}; retrying in ${Math.round(delay / 1000)}s`);

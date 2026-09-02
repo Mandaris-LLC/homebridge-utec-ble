@@ -81,6 +81,32 @@ function explainAdapterError(err) {
   );
 }
 
+// noble surfaces link-layer failures as a bare HCI code, which says nothing on
+// its own. These are the ones that actually come up driving a battery lock.
+const HCI_REASONS = {
+  8: 'connection timed out — the lock stopped responding',
+  19: 'the lock closed the connection',
+  22: 'connection terminated locally',
+  34: 'link-layer response timed out',
+  40: 'instant passed — timing between the radios slipped',
+  62:
+    'connection failed to be established — the lock never completed the ' +
+    'handshake. Usually it is still holding an earlier session (power-cycle ' +
+    'it), or the radio link is too contended to complete',
+};
+
+// Turns "Disconnected 62" into something that names the actual problem.
+function explainHciError(err) {
+  const match = /(?:disconnected|reason)\D{0,3}(\d{1,3})\b/i.exec(err.message || '');
+  if (!match) return err;
+
+  const code = Number(match[1]);
+  const reason = HCI_REASONS[code];
+  if (!reason) return err;
+
+  return new Error(`${err.message} (0x${code.toString(16)}: ${reason})`);
+}
+
 // Every identifier a peripheral can be recognised by. Linux reports the real
 // MAC address (and uses it as the id); macOS withholds it and substitutes a
 // per-machine UUID, so both are checked and either is enough.
@@ -220,6 +246,7 @@ async function findPeripherals({ ids = [], timeoutMs = 20000 } = {}) {
 }
 
 module.exports = {
-  probe, scanAll, findPeripherals, identifiersOf, normalize, explainAdapterError,
+  probe, scanAll, findPeripherals, identifiersOf, normalize,
+  explainAdapterError, explainHciError,
   KEY_KINDS, SERVICE_LOCK, canonUuid,
 };
