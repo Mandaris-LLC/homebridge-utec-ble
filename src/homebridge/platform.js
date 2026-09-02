@@ -106,11 +106,25 @@ class UtecPlatform {
     }
   }
 
-  // Let go of the locks on the way out, so a phone can reach them again.
+  // Let go of the locks on the way out, so a phone can reach them again, then
+  // release noble itself.
+  //
+  // noble's HCI socket keeps the event loop alive, so without that release the
+  // child bridge never exits on SIGTERM and Homebridge kills it a few seconds
+  // later — and a killed process leaves half-open links behind that stop the
+  // next one connecting. The hard kill was causing the very failure it then
+  // had to recover from.
   shutdown() {
-    for (const controller of this.controllers) {
-      controller.stop().catch(() => {});
-    }
+    const stopping = this.controllers.map((c) => c.stop().catch(() => {}));
+
+    Promise.allSettled(stopping).then(() => {
+      try {
+        require('@stoprocent/noble').stop();
+        this.log.debug('Bluetooth released');
+      } catch {
+        // Nothing to release if noble never loaded.
+      }
+    });
   }
 }
 

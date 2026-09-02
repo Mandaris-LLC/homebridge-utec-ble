@@ -17,6 +17,11 @@ const protocol = require('./protocol');
 const CHAR_DATA = '7201';
 const RESPONSE_TIMEOUT_MS = 15000;
 
+// noble normalises Bluetooth-SIG base UUIDs to their short form.
+const SERVICE_LOCK_SHORT = '7200';
+// The data channel plus the three key-agreement variants; nothing else is read.
+const WANTED_CHARACTERISTICS = ['7201', '7220', '7221', '7223'];
+
 function envDebug(...args) {
   if (process.env.UTEC_DEBUG) console.error('[utec]', ...args);
 }
@@ -70,12 +75,14 @@ class LockSession extends EventEmitter {
     });
     dropped.catch(() => {}); // never an unhandled rejection when setup wins
 
-    const { characteristics } = await Promise.race([
-      this.peripheral.discoverAllServicesAndCharacteristicsAsync(),
-      dropped,
-    ]);
+    // Ask only for the lock service and the four characteristics that matter.
+    // Enumerating everything means a round trip per characteristic — fourteen
+    // on a U-Bolt Pro — and a lock that expects the key exchange to start
+    // promptly will drop the link before that finishes.
+    const started = Date.now();
+    const characteristics = await Promise.race([this._discover(), dropped]);
     const byUuid = new Map(characteristics.map((c) => [canonUuid(c.uuid), c]));
-    this.debug(`services discovered (${characteristics.length} characteristics)`);
+    this.debug(`services discovered in ${Date.now() - started}ms (${characteristics.length} characteristics)`);
 
     this.data = byUuid.get(CHAR_DATA);
     if (!this.data) throw new Error('Lock has no data characteristic (7201).');
@@ -89,6 +96,24 @@ class LockSession extends EventEmitter {
     this.data.on('data', this._onData);
     await Promise.race([this.data.subscribeAsync(), dropped]);
     this.open = true;
+  }
+
+  // Targeted discovery, falling back to a full enumeration if the lock does not
+  // answer the narrow query — some firmware only supports the broad form.
+  async _discover() {
+    try {
+      const { characteristics } = await this.peripheral.discoverSomeServicesAndCharacteristicsAsync(
+        [SERVICE_LOCK_SHORT],
+        WANTED_CHARACTERISTICS
+      );
+      if (characteristics && characteristics.length) return characteristics;
+      this.debug('targeted discovery found nothing; enumerating everything');
+    } catch (err) {
+      this.debug(`targeted discovery failed (${err.message}); enumerating everything`);
+    }
+
+    const { characteristics } = await this.peripheral.discoverAllServicesAndCharacteristicsAsync();
+    return characteristics;
   }
 
   // Any LOCK_STATUS is the freshest truth available, whoever prompted it.
