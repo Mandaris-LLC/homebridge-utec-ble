@@ -24,6 +24,17 @@ class UtecPlatform {
     this.accessories = new Map();
     this.controllers = [];
 
+    // A Raspberry Pi's built-in radio shares its antenna with WiFi, and that
+    // contention shows up as connections that fail to establish (HCI 0x3E)
+    // while scanning still works. A USB dongle avoids it — this selects which
+    // adapter noble binds to. It must be set before noble is first required,
+    // which is why it happens here rather than at connect time.
+    const adapter = this.config.adapter;
+    if (Number.isInteger(adapter) && adapter >= 0 && process.platform === 'linux') {
+      process.env.NOBLE_HCI_DEVICE_ID = String(adapter);
+      this.log.info(`Using Bluetooth adapter hci${adapter}`);
+    }
+
     api.on('didFinishLaunching', () => this.discover());
     api.on('shutdown', () => this.shutdown());
   }

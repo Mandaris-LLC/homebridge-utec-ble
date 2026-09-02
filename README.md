@@ -165,48 +165,28 @@ EOF
 sudo systemctl daemon-reload && sudo systemctl restart homebridge
 ```
 
-**bluetoothd competes for the adapter.** noble talks to the raw HCI socket,
-bypassing BlueZ, but bluetoothd still manages the adapter and tears down links
-it did not create — the symptom is a connection that comes up and dies within a
-second, before the key exchange finishes. Scanning is unaffected, which is why
-discovery can work while connecting does not.
+**The built-in radio may not be good enough.** On a Pi 3/4 the Bluetooth and
+WiFi radios share one antenna. Scanning tolerates the contention, but
+*establishing* a connection often does not, and the symptom is a link that comes
+up and immediately fails with HCI `0x3E` — "connection failed to be
+established" — before the key exchange starts. Locks that connect fine from
+another machine a similar distance away point straight at this.
 
-```sh
-sudo systemctl stop bluetooth
-sudo rfkill unblock bluetooth && sudo hciconfig hci0 up   # BlueZ was powering it
+A USB Bluetooth dongle avoids the shared antenna. Find its index with
+`hciconfig`, then set it in the plugin config:
+
+```json
+{ "platform": "UtecBLE", "adapter": 1 }
 ```
 
-Stopping bluetoothd leaves the adapter powered off, because that is what brought
-it up — hence the second line. To make it persist, disable bluetoothd and bring
-the adapter up before Homebridge:
+Leaving `adapter` unset uses the default. To test the theory before buying
+anything, put the Pi on Ethernet and take WiFi down — if connections start
+working, it is coexistence.
 
-```ini
-# /etc/systemd/system/hci0-up.service
-[Unit]
-Description=Power up hci0 for raw HCI use
-BindsTo=sys-subsystem-bluetooth-devices-hci0.device
-After=sys-subsystem-bluetooth-devices-hci0.device
-Before=homebridge.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/bin/rfkill unblock bluetooth
-ExecStart=/usr/bin/hciconfig hci0 up
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now hci0-up
-sudo systemctl disable bluetooth
-```
-
-This gives noble exclusive use of the adapter, and disables BlueZ for everything
-else on that host — fine on a Pi dedicated to Homebridge, not if other Bluetooth
-services need it.
+`bluetoothd` is usually best left running: it configures the adapter (LE
+parameters, connection defaults) that noble then uses. Stopping it leaves the
+adapter powered off, since that is what brings it up, and a bare
+`hciconfig hci0 up` is not equivalent.
 
 `utec doctor` reports on all of this, and needs no adapter, so it is safe to run
 while Homebridge holds it.

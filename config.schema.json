@@ -2,7 +2,7 @@
   "pluginAlias": "UtecBLE",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Controls Ultraloq locks over Bluetooth, so locks behind a Bridge adapter work even though the U-tec cloud API cannot see them.\n\n**Run `utec link` first**, as the same user Homebridge runs as. That signs in to U-tec once to cache each lock's Bluetooth keys; your account password is not stored. This plugin reads those cached keys and never signs in itself.\n\nRun this on a machine within Bluetooth range of the doors (roughly 15-30 ft). A **child bridge** is strongly recommended — see the footer.",
+  "headerDisplay": "Controls Ultraloq locks over Bluetooth, so locks behind a Bridge adapter work even though the U-tec cloud API cannot see them.\n\n**Run `utec link` first**, as the same user Homebridge runs as. That signs in to U-tec once to cache each lock's Bluetooth keys; your account password is not stored. This plugin reads those cached keys and never signs in itself.\n\nRun this on a machine within Bluetooth range of the doors (roughly 15-30 ft). A **child bridge** is strongly recommended \u2014 see the footer.",
   "footerDisplay": "**Use a child bridge.** The connection to each lock is held open so the lock can report changes immediately, and that work should not share Homebridge's main process. Set it under this platform's Bridge Settings, or add `\"_bridge\": { \"username\": \"0E:12:34:56:78:90\", \"port\": 51900 }` to the platform config.\n\n**One connection at a time.** These locks accept a single Bluetooth connection, so while this plugin holds it the U-tec phone app cannot connect. Stopping Homebridge releases the locks.\n\n**Bluetooth permission** is needed. See the README for the systemd drop-in, which survives Homebridge updates in a way `setcap` does not.",
   "schema": {
     "type": "object",
@@ -17,12 +17,19 @@
       "locks": {
         "title": "Locks",
         "type": "array",
-        "description": "Leave empty for every cached lock. Name them only when this host should handle a subset — for example when one Pi cannot reach every door.",
+        "description": "Leave empty for every cached lock. Name them only when this host should handle a subset \u2014 for example when one Pi cannot reach every door.",
         "items": {
           "type": "string",
           "title": "Lock name",
           "description": "Exactly as shown by `utec status`, e.g. Front Door."
         }
+      },
+      "adapter": {
+        "title": "Bluetooth adapter (hci index)",
+        "type": "integer",
+        "minimum": 0,
+        "placeholder": "0",
+        "description": "Leave empty for the default. A Raspberry Pi's built-in radio shares its antenna with WiFi, and that contention makes connections fail to establish (HCI 0x3E) while scanning still works \u2014 a USB dongle avoids it. Run `hciconfig` to find the index, usually 1 for a dongle."
       },
       "refreshMinutes": {
         "title": "Safety-net refresh (minutes)",
@@ -41,7 +48,17 @@
       "title": "Advanced",
       "expandable": true,
       "expanded": false,
-      "items": ["refreshMinutes", { "key": "locks", "type": "array", "items": ["locks[]"] }]
+      "items": [
+        "adapter",
+        "refreshMinutes",
+        {
+          "key": "locks",
+          "type": "array",
+          "items": [
+            "locks[]"
+          ]
+        }
+      ]
     }
   ]
 }
