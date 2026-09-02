@@ -16,9 +16,37 @@ const KEY_KINDS = {
 const SERVICE_LOCK = '00007200-0000-1000-8000-00805f9b34fb';
 const SERVICE_DATA = '00007201-0000-1000-8000-00805f9b34fb';
 
+// Where adapter-level events are reported. Set by whoever owns the logging.
+let adapterLog = null;
+
+function setAdapterLogger(fn) {
+  adapterLog = fn;
+}
+
+let instrumented = false;
+
+// noble discards its entire peripheral registry whenever the adapter leaves the
+// poweredOn state, and pending connects then never resolve — the call simply
+// hangs, or warns "unknown peripheral <id>". An adapter that resets underneath
+// us therefore looks like a dozen unrelated faults, so make the resets visible.
+function instrument(noble) {
+  if (instrumented) return;
+  instrumented = true;
+
+  noble.on('stateChange', (state) => {
+    adapterLog?.(
+      state === 'poweredOn'
+        ? 'adapter powered on'
+        : `adapter left poweredOn (now "${state}") — in-flight work is invalidated`
+    );
+  });
+  noble.on('warning', (message) => adapterLog?.(`noble warning: ${message}`));
+}
+
 function loadNoble() {
+  let noble;
   try {
-    return require('@stoprocent/noble');
+    noble = require('@stoprocent/noble');
   } catch {
     throw new Error(
       'Bluetooth support needs the noble package:\n\n' +
@@ -27,6 +55,8 @@ function loadNoble() {
         'System Settings -> Privacy & Security -> Bluetooth.'
     );
   }
+  instrument(noble);
+  return noble;
 }
 
 // noble reports addresses lowercased and without separators on some platforms.
@@ -277,6 +307,6 @@ async function findPeripherals({ ids = [], timeoutMs = 20000 } = {}) {
 
 module.exports = {
   probe, scanAll, findPeripherals, identifiersOf, normalize,
-  explainAdapterError, explainHciError, connectByAddress,
+  explainAdapterError, explainHciError, connectByAddress, setAdapterLogger,
   KEY_KINDS, SERVICE_LOCK, canonUuid,
 };

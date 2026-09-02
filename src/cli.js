@@ -6,6 +6,7 @@ const readline = require('readline');
 const cloud = require('./ble/cloud');
 const config = require('./config');
 const locksModule = require('./locks');
+require('./ble/probe').setAdapterLogger((msg) => console.error(`  [adapter] ${msg}`));
 
 const USAGE = `
 utec — lock and unlock Ultraloq locks over Bluetooth

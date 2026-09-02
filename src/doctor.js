@@ -45,22 +45,25 @@ function checkKeys() {
   };
 }
 
-// noble talks to the raw HCI socket, bypassing BlueZ. bluetoothd still manages
-// the adapter and will tear down links it did not create, which looks exactly
-// like a lock dropping the connection a moment after it comes up.
+// Running is the right state: bluetoothd configures the adapter (LE parameters,
+// connection defaults) that noble then uses, and stopping it powers the adapter
+// down, since that is what brings it up. It is reported only because it can
+// contend for the adapter, and is worth ruling out if links come up and die.
 function checkBluetoothd() {
   if (os.platform() !== 'linux' || !has('systemctl')) {
     return { status: OK, title: 'bluetoothd', detail: 'not applicable on this platform' };
   }
   const active = run('systemctl', ['is-active', 'bluetooth']);
-  if (active !== 'active') {
-    return { status: OK, title: 'bluetoothd', detail: `not running (${active || 'inactive'})` };
+  if (active === 'active') {
+    return { status: OK, title: 'bluetoothd', detail: 'running (normal — it configures the adapter)' };
   }
   return {
     status: WARN,
     title: 'bluetoothd',
-    detail: 'running — it competes with this plugin for the adapter',
-    fix: 'Test with: sudo systemctl stop bluetooth (then `disable` if that fixes it).',
+    detail: `not running (${active || 'inactive'}) — it normally configures the adapter`,
+    fix:
+      'Unless it was stopped deliberately, start it: sudo systemctl start bluetooth\n' +
+      '      A bare `hciconfig hci0 up` is not equivalent — the LE parameters differ.',
   };
 }
 

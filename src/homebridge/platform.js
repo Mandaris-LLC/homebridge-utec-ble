@@ -12,6 +12,7 @@ const { LockController } = require('../controller');
 const { LockAccessory } = require('./accessory');
 const config = require('../config');
 const locksModule = require('../locks');
+const { setAdapterLogger } = require('../ble/probe');
 
 const PLUGIN_NAME = 'homebridge-utec-ble';
 const PLATFORM_NAME = 'UtecBLE';
@@ -34,6 +35,9 @@ class UtecPlatform {
       process.env.NOBLE_HCI_DEVICE_ID = String(adapter);
       this.log.info(`Using Bluetooth adapter hci${adapter}`);
     }
+
+    // Adapter resets invalidate every connection, so log them prominently.
+    setAdapterLogger((msg) => this.log.warn(msg));
 
     api.on('didFinishLaunching', () => this.discover());
     api.on('shutdown', () => this.shutdown());
